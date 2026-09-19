@@ -1,0 +1,5 @@
+{
+  "name": "wholesale price variant",
+  "welcome": "Welcome to the {{target}} extension!",
+  "pricing": "Set the pricing and minimum quantity required to qualify for tiered pricing."
+}
