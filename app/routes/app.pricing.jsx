@@ -1,5 +1,6 @@
 import { authenticate } from "../shopify.server"
-import { useLoaderData, useSearchParams } from "react-router"
+import { useLoaderData, useSearchParams } from "react-router";
+import { useState } from "react";
 
 export const loader = async ({ request }) => {
     const { admin } = await authenticate.admin(request);
@@ -47,6 +48,9 @@ export const loader = async ({ request }) => {
                                 amount
                             }
                         }
+                        variantsCount{
+                            count
+                        }
                         variants(first: 100){
                             nodes{
                                 id  
@@ -88,10 +92,14 @@ export const loader = async ({ request }) => {
 
 export default function Pricing() {
     const { products, tierId } = useLoaderData();
+    const [toogle, setToogle] = useState(false);
     console.log(products, tierId)
     const tierField = products.data.metafieldDefinitions.nodes.find(metafield => `gid://shopify/MetafieldDefinition/${tierId}` === metafield.id);
     const quantityField = products.data.metafieldDefinitions.nodes.find(metafield => metafield.key === `${tierField.key}_min`);
     const quantityFieldId = quantityField ? quantityField.id : null;
+    const showallVariant = async (product) => {
+        setToogle(!toogle);
+    }
     return (
         <>
             <s-page>
@@ -119,19 +127,31 @@ export default function Pricing() {
                                                 </s-grid>
                                             </s-table-cell>
                                             <s-table-cell>
-                                                <s-text>{product.title}</s-text>
+                                                <s-stack direction="block" gap="small-500">
+                                                    <s-text>{product.title}</s-text>
+                                                    {product.variants.nodes.length > 1 && (<>
+                                                        <s-stack direction="inline" gap="small-400" justifyContent="start" alignItems="center">
+                                                            <s-text>{product.variantsCount.count} variants</s-text>
+                                                            <s-button variant="tertiary" icon={toogle ? "caret-down" : "caret-left"} onClick={() => showallVariant(product)}></s-button>
+                                                        </s-stack>
+                                                    </>)}
+                                                </s-stack>
                                             </s-table-cell>
                                             <s-table-cell>
-                                                {product.variants.nodes.length === 1 ? (
-                                                    <s-money-field
-                                                        value={product.variants.nodes[0].metafields.nodes.find((metafield) => metafield.id === `gid://shopify/MetafieldDefinition/${tierId}`)?.value?.amount || product.variants.nodes[0].price}
-                                                    />
-                                                ) : (
-                                                    <s-text>{product.priceRangeV2.minVariantPrice.amount} - {product.priceRangeV2.maxVariantPrice.amount}</s-text>
-                                                )}
+                                                <s-stack maxInlineSize="150px" justifyContent="space-between" direction="inline" alignItems="center">
+                                                    {product.variants.nodes.length === 1 ? (
+                                                        <s-money-field
+                                                            value={product.variants.nodes[0].metafields.nodes.find((metafield) => metafield.id === `gid://shopify/MetafieldDefinition/${tierId}`)?.value?.amount || product.variants.nodes[0].price}
+                                                        />
+                                                    ) : (
+                                                        <>
+                                                            <s-text>{product.priceRangeV2.minVariantPrice.amount} - {product.priceRangeV2.maxVariantPrice.amount}</s-text>
+                                                        </>
+                                                    )}
+                                                </s-stack>
                                             </s-table-cell>
                                             <s-table-cell>
-                                                <s-stack minBlockSize="100px">
+                                                <s-stack maxInlineSize="80px">
                                                     {product.variants.nodes.length === 1 ? (
                                                         <s-number-field
                                                             min={1}
@@ -144,11 +164,13 @@ export default function Pricing() {
                                                 </s-stack>
                                             </s-table-cell>
                                             <s-table-cell>
-                                                {product.variants.nodes.length === 1 ? (
-                                                    <s-money-field disabled value={product.variants.nodes[0].price}></s-money-field>
-                                                ) : (
-                                                    <s-text>-</s-text>
-                                                )}
+                                                <s-stack maxInlineSize="150px">
+                                                    {product.variants.nodes.length === 1 ? (
+                                                        <s-money-field disabled value={product.variants.nodes[0].price}></s-money-field>
+                                                    ) : (
+                                                        <s-text>-</s-text>
+                                                    )}
+                                                </s-stack>
                                             </s-table-cell>
                                         </s-table-row>
                                     </>
