@@ -11,6 +11,17 @@ export default async () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Split array into chunks of at most `size` items.
+ */
+function chunkArray(arr, size) {
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
+/**
  * Convert Shopify metafield raw string into a usable JS value.
  *
  * money           -> { amount: "10.00", currency_code: "CAD" }
@@ -587,90 +598,90 @@ function Extension() {
         return;
       }
 
-      // Shopify currently allows a maximum of 25
-      // metafields in one metafieldsSet mutation.
-      if (changedMetafields.length > 25) {
-        throw new Error(
-          "Too many metafields changed at once. Shopify allows a maximum of 25 metafields per metafieldsSet request.",
-        );
-      }
+      // Send in chunks of 25 to respect Shopify API limits without failing on large updates
+      const chunks = chunkArray(changedMetafields, 25);
+      const allSaved = [];
 
-      const response = await fetch(
-        "shopify:admin/api/graphql.json",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            query: `
-              mutation SetVariantMetafields(
-                $metafields: [MetafieldsSetInput!]!
-              ) {
-                metafieldsSet(
-                  metafields: $metafields
+      for (const chunk of chunks) {
+        const response = await fetch(
+          "shopify:admin/api/graphql.json",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              query: `
+                mutation SetVariantMetafields(
+                  $metafields: [MetafieldsSetInput!]!
                 ) {
-                  metafields {
-                    id
-                    key
-                    namespace
-                    type
-                    value
-                  }
+                  metafieldsSet(
+                    metafields: $metafields
+                  ) {
+                    metafields {
+                      id
+                      key
+                      namespace
+                      type
+                      value
+                    }
 
-                  userErrors {
-                    field
-                    message
-                    code
+                    userErrors {
+                      field
+                      message
+                      code
+                    }
                   }
                 }
-              }
-            `,
-            variables: {
-              metafields: changedMetafields,
-            },
-          }),
-        },
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          `Shopify save request failed: ${response.status}`,
+              `,
+              variables: {
+                metafields: chunk,
+              },
+            }),
+          },
         );
-      }
 
-      const json = await response.json();
+        if (!response.ok) {
+          throw new Error(
+            `Shopify save request failed: ${response.status}`,
+          );
+        }
 
-      if (json.errors?.length) {
-        throw new Error(
-          json.errors[0].message,
-        );
-      }
+        const json = await response.json();
 
-      const payload =
-        json.data?.metafieldsSet;
+        if (json.errors?.length) {
+          throw new Error(
+            json.errors[0].message,
+          );
+        }
 
-      if (!payload) {
-        throw new Error(
-          "Shopify did not return a metafieldsSet response.",
-        );
-      }
+        const payload =
+          json.data?.metafieldsSet;
 
-      if (payload.userErrors?.length) {
-        const message =
-          payload.userErrors
-            .map(
-              (userError) =>
-                userError.message,
-            )
-            .join(", ");
+        if (!payload) {
+          throw new Error(
+            "Shopify did not return a metafieldsSet response.",
+          );
+        }
 
-        throw new Error(message);
+        if (payload.userErrors?.length) {
+          const message =
+            payload.userErrors
+              .map(
+                (userError) =>
+                  userError.message,
+              )
+              .join(", ");
+
+          throw new Error(message);
+        }
+
+        allSaved.push(...(payload.metafields ?? []));
       }
 
       console.log(
         "Variant pricing saved:",
-        payload.metafields,
+        allSaved,
       );
 
       // The currently edited state is now the saved state.
@@ -680,13 +691,13 @@ function Extension() {
 
       // Update local IDs for metafields that may
       // have just been created.
-      if (payload.metafields?.length) {
+      if (allSaved.length) {
         setMetafieldMap((previous) => {
           const next = {
             ...previous,
           };
 
-          for (const saved of payload.metafields) {
+          for (const saved of allSaved) {
             if (next[saved.key]) {
               next[saved.key] = {
                 ...next[saved.key],
@@ -707,7 +718,7 @@ function Extension() {
             ...previous,
           };
 
-          for (const saved of payload.metafields) {
+          for (const saved of allSaved) {
             if (next[saved.key]) {
               next[saved.key] = {
                 ...next[saved.key],
