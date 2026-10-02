@@ -4,6 +4,7 @@ shamefullyHoist: true
 allowBuilds:
   '@firebase/util': false
   '@parcel/watcher': true
+  core-js: true
   esbuild: true
   protobufjs: false
   unrs-resolver: true

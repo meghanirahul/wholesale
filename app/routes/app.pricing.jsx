@@ -463,6 +463,16 @@ export const action = async ({ request }) => {
   return { ok: false, error: "Unknown intent." };
 };
 
+// ─── Should Revalidate ────────────────────────────────────────────────────────
+
+export function shouldRevalidate(arg) {
+  const intent = arg.formData?.get("intent") || arg.actionResult?.intent;
+  if (intent === "fetchProducts" || intent === "fetchVariants" || intent === "save") {
+    return false;
+  }
+  return arg.defaultShouldRevalidate;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function Pricing() {
@@ -491,15 +501,19 @@ export default function Pricing() {
   const pendingSaveRef = useRef(false);
   const pendingProductFetchRef = useRef(null);
 
-  // ── Sync loader updates ──────────────────────────────────────────────────
+  // ── Sync loader updates on tier change ───────────────────────────────────
 
+  const currentTierIdRef = useRef(loaderData.tierId);
   useEffect(() => {
-    setProducts(loaderData.products ?? []);
-    setProductPageInfo(loaderData.pageInfo ?? {});
-    setEdits((prev) =>
-      mergeVariantsIntoEdits(prev, loaderData.products ?? [], priceKey, qtyKey)
-    );
-  }, [loaderData.products, loaderData.pageInfo, priceKey, qtyKey]);
+    if (currentTierIdRef.current !== loaderData.tierId) {
+      currentTierIdRef.current = loaderData.tierId;
+      setProducts(loaderData.products ?? []);
+      setProductPageInfo(loaderData.pageInfo ?? {});
+      setProductCursorHistory([null]);
+      setExpandedProducts({});
+      setEdits(mergeVariantsIntoEdits({}, loaderData.products ?? [], priceKey, qtyKey));
+    }
+  }, [loaderData.tierId, loaderData.products, loaderData.pageInfo, priceKey, qtyKey]);
 
   // ── Handle fetcher responses ─────────────────────────────────────────────
 
@@ -509,6 +523,7 @@ export default function Pricing() {
     // Handle product-level pagination responses
     if (fetcher.data.intent === "fetchProducts") {
       setProductPageLoading(false);
+      const pending = pendingProductFetchRef.current;
       pendingProductFetchRef.current = null;
       if (fetcher.data.ok === false) {
         setSaveError(fetcher.data.error || "Failed to load products.");
@@ -518,6 +533,12 @@ export default function Pricing() {
       const newPageInfo = fetcher.data.pageInfo ?? {};
       setProducts(newProducts);
       setProductPageInfo(newPageInfo);
+
+      if (pending?.direction === "next") {
+        setProductCursorHistory((prev) => [...prev, pending.cursor]);
+      } else if (pending?.direction === "prev") {
+        setProductCursorHistory((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
+      }
 
       // Merge new products into edits (preserving already-edited values)
       setEdits((prevEdits) =>
@@ -685,7 +706,7 @@ export default function Pricing() {
     setProductPageLoading(true);
     setSaveError(null);
     setSaveSuccess(false);
-    pendingProductFetchRef.current = { direction };
+    pendingProductFetchRef.current = { cursor, direction };
     const fd = new FormData();
     fd.append("intent", "fetchProducts");
     if (cursor) {
@@ -697,16 +718,12 @@ export default function Pricing() {
   const handleNextProductPage = () => {
     if (!productPageInfo?.hasNextPage || productPageLoading || saving) return;
     const nextCursor = productPageInfo.endCursor;
-    setProductCursorHistory((prev) => [...prev, nextCursor]);
     loadProductPage(nextCursor, "next");
   };
 
   const handlePrevProductPage = () => {
     if (productCursorHistory.length <= 1 || productPageLoading || saving) return;
-    const newHistory = [...productCursorHistory];
-    newHistory.pop();
-    const prevCursor = newHistory[newHistory.length - 1]; // null for page 1
-    setProductCursorHistory(newHistory);
+    const prevCursor = productCursorHistory[productCursorHistory.length - 2];
     loadProductPage(prevCursor, "prev");
   };
 
@@ -829,29 +846,55 @@ export default function Pricing() {
     (e) => String(e.value ?? "") !== String(e.originalValue ?? "")
   );
 
+  // ── Sync shopify.saveBar with dirty state (hasChanges) ───────────────────
+
+  const saveBarId = "pricing-save-bar";
+
+  useEffect(() => {
+    if (typeof shopify !== "undefined" && shopify.saveBar) {
+      if (hasChanges) {
+        shopify.saveBar.show(saveBarId);
+      } else {
+        shopify.saveBar.hide(saveBarId);
+      }
+    }
+  }, [hasChanges]);
+
+  // Hide save bar on component unmount
+  useEffect(() => {
+    return () => {
+      if (typeof shopify !== "undefined" && shopify.saveBar) {
+        shopify.saveBar.hide(saveBarId);
+      }
+    };
+  }, []);
+
+  // show toast
+    if(saveSuccess) shopify.toast.show('Saved Successfully');
+
   // ── Render ───────────────────────────────────────────────────────────────
 
   return (
     <s-page heading={`${tierDef.name} — B2B Pricing`}>
-      <s-section>
-        {saveError && <s-banner tone="critical">{saveError}</s-banner>}
-        {saveSuccess && <s-banner tone="success">Pricing saved successfully!</s-banner>}
+      <ui-save-bar id={saveBarId}>
+        <button
+          variant="primary"
+          onClick={handleSave}
+          disabled={saving || productPageLoading}
+        >
+          {saving ? "Saving..." : "Save"}
+        </button>
+        <button
+          onClick={handleCancel}
+          disabled={saving || productPageLoading}
+        >
+          Discard
+        </button>
+      </ui-save-bar>
 
-        {hasChanges && (
-          <s-stack direction="inline" gap="base" justifyContent="end" alignItems="center">
-            <s-button variant="secondary" onClick={handleCancel} disabled={saving}>
-              Cancel
-            </s-button>
-            <s-button
-              variant="primary"
-              onClick={handleSave}
-              disabled={saving}
-              {...(saving ? { loading: true } : {})}
-            >
-              {saving ? "Saving..." : "Save"}
-            </s-button>
-          </s-stack>
-        )}
+      {saveError && <s-banner tone="critical">{saveError}</s-banner>}
+      {saveSuccess && <s-banner tone="success">Pricing saved successfully!</s-banner>}
+      <s-section>
 
         <s-table>
           <s-table-header-row>
@@ -991,22 +1034,22 @@ export default function Pricing() {
           </s-stack>
         </s-stack>
 
+      </s-section>
         {hasChanges && (
           <s-stack direction="inline" gap="base" justifyContent="end" alignItems="center" paddingBlockStart="base">
-            <s-button variant="secondary" onClick={handleCancel} disabled={saving}>
+            <s-button variant="secondary" onClick={handleCancel} disabled={saving || productPageLoading}>
               Cancel
             </s-button>
             <s-button
               variant="primary"
               onClick={handleSave}
-              disabled={saving}
+              disabled={saving || productPageLoading}
               {...(saving ? { loading: true } : {})}
             >
               {saving ? "Saving..." : "Save"}
             </s-button>
           </s-stack>
         )}
-      </s-section>
     </s-page>
   );
 }
