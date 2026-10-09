@@ -1,54 +1,55 @@
 {
   "payload": {
-    "export": "cart-lines-discounts-generate-run",
+    "export": "cart_lines_discounts_generate_run",
     "target": "cart.lines.discounts.generate.run",
     "input": {
       "cart": {
         "lines": [
           {
             "id": "gid://shopify/CartLine/0",
+            "quantity": 2,
             "cost": {
-              "subtotalAmount": {
-                "amount": "6.0"
+              "amountPerQuantity": {
+                "amount": "10.00"
               }
+            },
+            "merchandise": {
+              "__typename": "ProductVariant",
+              "id": "gid://shopify/ProductVariant/1",
+              "vipPrice": {
+                "value": "{\"amount\":\"6.00\",\"currency_code\":\"USD\"}"
+              },
+              "vipMin": {
+                "value": "1"
+              },
+              "wholesalePrice": null,
+              "wholesaleMin": null,
+              "b2bPrice": null,
+              "b2bMin": null
             }
           }
-        ]
+        ],
+        "buyerIdentity": {
+          "customer": {
+            "pricingTiers": {
+              "value": "vip_pricing"
+            }
+          }
+        }
       },
       "discount": {
-        "discountClasses": ["PRODUCT", "ORDER", "SHIPPING"]
+        "metafield": null
       }
     },
-    "inputBytes": 126,
-    "output": {
+    "inputBytes": 400,
+    "expectedOutput": {
       "operations": [
         {
-          "orderDiscountsAdd": {
-            "candidates": [
-              {
-                "message": "10% OFF ORDER",
-                "targets": [
-                  {
-                    "orderSubtotal": {
-                      "excludedCartLineIds": []
-                    }
-                  }
-                ],
-                "value": {
-                  "percentage": {
-                    "value": 10.0
-                  }
-                }
-              }
-            ],
-            "selectionStrategy": "FIRST"
-          }
-        },
-        {
           "productDiscountsAdd": {
+            "selectionStrategy": "ALL",
             "candidates": [
               {
-                "message": "20% OFF PRODUCT",
+                "message": "VIP Price",
                 "targets": [
                   {
                     "cartLine": {
@@ -57,13 +58,13 @@
                   }
                 ],
                 "value": {
-                  "percentage": {
-                    "value": 20.0
+                  "fixedAmount": {
+                    "amount": "4.0",
+                    "appliesToEachItem": true
                   }
                 }
               }
-            ],
-            "selectionStrategy": "FIRST"
+            ]
           }
         }
       ]

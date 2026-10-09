@@ -1,7 +1,8 @@
-/* eslint-disable react/prop-types */
+﻿/* eslint-disable react/prop-types */
 import { authenticate } from "../shopify.server";
 import { useLoaderData, useFetcher } from "react-router";
-import { useState, useRef, useEffect, Fragment } from "react";
+import { useState, useRef, useEffect, Fragment, useCallback } from "react";
+import { saveStoreTierTags, getStoreTierTags } from "../services/tierStorage.server";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,16 @@ function editKey(variantId, mfKey) {
   return `${variantId}::${mfKey}`;
 }
 
+/** Normalise a money amount to a canonical 2-decimal-place string.
+ *  Accepts strings ("500.9", "949.95") or numbers (500.95).
+ *  Falls back to the raw value if it cannot be parsed (e.g. already normalised).
+ */
+function normalizeMoneyAmount(raw) {
+  const n = parseFloat(raw);
+  if (Number.isFinite(n) && n >= 0) return n.toFixed(2);
+  return String(raw ?? "0.00");
+}
+
 function mergeVariantsIntoEdits(editsMap, productsList, priceKey, qtyKey) {
   const nextEdits = { ...editsMap };
   for (const prod of productsList) {
@@ -36,7 +47,9 @@ function mergeVariantsIntoEdits(editsMap, productsList, priceKey, qtyKey) {
         const pk = editKey(v.id, priceKey);
         if (!(pk in nextEdits)) {
           const mf = v.metafields?.nodes?.find((m) => m.key === priceKey);
-          const orig = mf ? (parseMoneyAmount(mf.value) ?? v.price) : v.price;
+          // Always normalise to 2dp so the dirty-check comparison is type-stable
+          const rawAmt = mf ? (parseMoneyAmount(mf.value) ?? v.price) : v.price;
+          const orig = normalizeMoneyAmount(rawAmt);
           nextEdits[pk] = { value: orig, originalValue: orig, type: "money", key: priceKey, ownerId: v.id };
         }
       }
@@ -250,56 +263,109 @@ function VariantRow({
 // ─── Loader ───────────────────────────────────────────────────────────────────
 
 export const loader = async ({ request }) => {
-  const { admin } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const url = new URL(request.url);
   const tierId = url.searchParams.get("id");
   const after = url.searchParams.get("after") || null;
 
-  const response = await admin.graphql(
-    `#graphql
-      query GetPricingData($after: String) {
-        shop { currencyCode }
-        metafieldDefinitions(first: 100, namespace: "$app", ownerType: PRODUCTVARIANT) {
-          nodes { id key name type { name } }
-        }
-        products(first: 50, after: $after) {
-          pageInfo {
-            hasNextPage
-            hasPreviousPage
-            startCursor
-            endCursor
+  // ── Parallel fetch: pricing data + customer tags + active discount ──
+  const [response, tagsResponse, shopMetaResponse] = await Promise.all([
+    admin.graphql(
+      `#graphql
+        query GetPricingData($after: String) {
+          shop { currencyCode }
+          metafieldDefinitions(first: 100, namespace: "$app", ownerType: PRODUCTVARIANT) {
+            nodes { id key name type { name } }
           }
-          nodes {
-            id title
-            media(first: 1) { nodes { preview { image { url } } } }
-            priceRangeV2 {
-              maxVariantPrice { amount }
-              minVariantPrice { amount }
-            }
-            variantsCount { count }
-            variants(first: 100) {
-              nodes {
-                id title price
-                metafields(namespace: "$app", first: 100) {
-                  nodes { id key type value }
-                }
+          products(first: 50, after: $after) {
+            pageInfo { hasNextPage hasPreviousPage startCursor endCursor }
+            nodes {
+              id title
+              media(first: 1) { nodes { preview { image { url } } } }
+              priceRangeV2 {
+                maxVariantPrice { amount }
+                minVariantPrice { amount }
               }
-              pageInfo { endCursor hasNextPage hasPreviousPage startCursor }
+              variantsCount { count }
+              variants(first: 100) {
+                nodes {
+                  id title price
+                  metafields(namespace: "$app", first: 100) {
+                    nodes { id key type value }
+                  }
+                }
+                pageInfo { endCursor hasNextPage hasPreviousPage startCursor }
+              }
             }
+          }
+        }
+      `,
+      { variables: { after } }
+    ),
+    admin.graphql(`#graphql
+      query GetAllCustomerTags {
+        shop {
+          customerTags(first: 250) {
+            nodes
           }
         }
       }
-    `,
-    { variables: { after } }
-  );
+    `),
+    admin.graphql(`#graphql
+      query GetShopDiscountMeta {
+        shop {
+          active_discount: metafield(namespace: "$app", key: "active_discount_id") { value }
+        }
+      }
+    `),
+  ]);
 
   const data = await response.json();
+  const tagsData = await tagsResponse.json();
+  const shopMetaData = await shopMetaResponse.json();
+
   const defs = data?.data?.metafieldDefinitions?.nodes ?? [];
   const tierGid = `gid://shopify/MetafieldDefinition/${tierId}`;
   const tierDef = defs.find((d) => d.id === tierGid) ?? null;
   const priceKey = tierDef?.key ?? null;
   const qtyKey = priceKey ? `${priceKey}_min` : null;
   const qtyDef = qtyKey ? (defs.find((d) => d.key === qtyKey) ?? null) : null;
+
+  const allCustomerTags = tagsData?.data?.shop?.customerTags?.nodes ?? [];
+  const activeDiscountId = shopMetaData?.data?.shop?.active_discount?.value ?? null;
+
+  // Load existing tier_tags_map from the active discount metafield
+  let currentTierTags = [];
+  if (activeDiscountId && priceKey) {
+    try {
+      const discountRes = await admin.graphql(
+        `#graphql
+          query GetTierTagsMap($id: ID!) {
+            discountNode(id: $id) {
+              metafield(namespace: "$app", key: "tier_tags_map") { value }
+            }
+          }
+        `,
+        { variables: { id: activeDiscountId } }
+      );
+      const discountData = await discountRes.json();
+      const rawMap = discountData?.data?.discountNode?.metafield?.value;
+      const tierTagsMap = rawMap ? JSON.parse(rawMap) : {};
+      currentTierTags = tierTagsMap[priceKey] ?? [];
+    } catch {
+      currentTierTags = [];
+    }
+  }
+
+  // Fallback to Firestore store tier tags if discount metafield empty
+  if ((!currentTierTags || currentTierTags.length === 0) && session?.shop && priceKey) {
+    try {
+      const storeTagsMap = await getStoreTierTags(session.shop);
+      currentTierTags = storeTagsMap[priceKey] ?? [];
+    } catch {
+      currentTierTags = [];
+    }
+  }
 
   return {
     tierId,
@@ -309,13 +375,99 @@ export const loader = async ({ request }) => {
     currencyCode: data?.data?.shop?.currencyCode ?? "USD",
     products: data?.data?.products?.nodes ?? [],
     pageInfo: data?.data?.products?.pageInfo ?? {},
+    allCustomerTags,
+    currentTierTags,
+    activeDiscountId,
   };
 };
+
+// ─── Server Helper: Sync customer pricing_tiers metafields ───────────────────
+//
+// When a merchant saves their tier→tag configuration, this function:
+//  1. Collects all configured tags across all tiers
+//  2. Queries customers who have any of those tags (Admin API, up to 250 at a time)
+//  3. Computes each customer's qualifying tiers based on their tags
+//  4. Writes the "$app:pricing_tiers" metafield (e.g. "vip_pricing,wholesale_pricing")
+//     so the discount function can read it at checkout without needing webhooks
+//
+async function syncAllCustomerTierMetafields(admin, tierTagsMap) {
+  // Build a flat list of all tags across all tiers for the query filter
+  const allConfiguredTags = [
+    ...new Set(Object.values(tierTagsMap).flat()),
+  ];
+  if (allConfiguredTags.length === 0) return;
+
+  // Query customers who have any configured tag (Admin API query syntax)
+  const tagQuery = allConfiguredTags.map((t) => `tag:${t}`).join(" OR ");
+  let cursor = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const res = await admin.graphql(
+      `#graphql
+        query GetTaggedCustomers($query: String!, $after: String) {
+          customers(first: 250, query: $query, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              tags
+            }
+          }
+        }
+      `,
+      { variables: { query: tagQuery, after: cursor } }
+    );
+    const data = await res.json();
+    const page = data?.data?.customers;
+    if (!page) break;
+
+    hasNextPage = page.pageInfo?.hasNextPage ?? false;
+    cursor = page.pageInfo?.endCursor ?? null;
+
+    const metafieldInputs = [];
+    for (const customer of page.nodes) {
+      const customerTagsLC = (customer.tags ?? []).map((t) =>
+        t.toLowerCase()
+      );
+      const matchingTiers = [];
+      for (const [tierKey, configuredTags] of Object.entries(tierTagsMap)) {
+        const lcConfigured = (configuredTags ?? []).map((t) =>
+          t.toLowerCase()
+        );
+        if (customerTagsLC.some((ct) => lcConfigured.includes(ct))) {
+          matchingTiers.push(tierKey);
+        }
+      }
+      metafieldInputs.push({
+        ownerId: customer.id,
+        namespace: "$app",
+        key: "pricing_tiers",
+        type: "single_line_text_field",
+        value: matchingTiers.join(","),
+      });
+    }
+
+    // Batch write in groups of 25 (metafieldsSet limit)
+    for (let i = 0; i < metafieldInputs.length; i += 25) {
+      const batch = metafieldInputs.slice(i, i + 25);
+      await admin.graphql(
+        `#graphql
+          mutation BatchSetPricingTiers($metafields: [MetafieldsSetInput!]!) {
+            metafieldsSet(metafields: $metafields) {
+              userErrors { field message }
+            }
+          }
+        `,
+        { variables: { metafields: batch } }
+      );
+    }
+  }
+}
 
 // ─── Action ───────────────────────────────────────────────────────────────────
 
 export const action = async ({ request }) => {
-  const { admin } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
 
@@ -326,12 +478,7 @@ export const action = async ({ request }) => {
       `#graphql
         query GetPagedProducts($after: String) {
           products(first: 50, after: $after) {
-            pageInfo {
-              hasNextPage
-              hasPreviousPage
-              startCursor
-              endCursor
-            }
+            pageInfo { hasNextPage hasPreviousPage startCursor endCursor }
             nodes {
               id title
               media(first: 1) { nodes { preview { image { url } } } }
@@ -357,20 +504,176 @@ export const action = async ({ request }) => {
     );
     const prodData = await prodResponse.json();
     if (prodData.errors?.length) {
-      return {
-        intent: "fetchProducts",
-        ok: false,
-        error: prodData.errors.map((e) => e.message).join(", "),
-        products: [],
-        pageInfo: {},
-      };
+      return { intent: "fetchProducts", ok: false, error: prodData.errors.map((e) => e.message).join(", "), products: [], pageInfo: {} };
     }
-    return {
-      intent: "fetchProducts",
-      ok: true,
-      products: prodData?.data?.products?.nodes ?? [],
-      pageInfo: prodData?.data?.products?.pageInfo ?? {},
-    };
+    return { intent: "fetchProducts", ok: true, products: prodData?.data?.products?.nodes ?? [], pageInfo: prodData?.data?.products?.pageInfo ?? {} };
+  }
+
+  // ── saveTags intent: persist tier_tags_map to the discount metafield ──
+  if (intent === "saveTags") {
+    const priceKey = formData.get("priceKey");
+    const tagsRaw = formData.get("tags");
+    let tags = [];
+    try { tags = JSON.parse(tagsRaw); } catch { tags = []; }
+
+    // 1. Get or create the active automatic discount for the B2B Pricing function
+    let discountGid = formData.get("activeDiscountId") || null;
+    let shopGid = null;
+
+    if (!discountGid) {
+      // Fetch shop ID and stored discount GID together
+      const shopRes = await admin.graphql(`#graphql
+        query GetShopForDiscount {
+          shop {
+            id
+            active_discount: metafield(namespace: "$app", key: "active_discount_id") { value }
+          }
+        }
+      `);
+      const shopData = await shopRes.json();
+      shopGid = shopData?.data?.shop?.id ?? null;
+      discountGid = shopData?.data?.shop?.active_discount?.value ?? null;
+    }
+
+    if (!discountGid) {
+      // No stored discount — find function and create one
+      if (!shopGid) {
+        const shopIdRes = await admin.graphql(`#graphql query { shop { id } }`);
+        shopGid = (await shopIdRes.json())?.data?.shop?.id ?? null;
+      }
+      const funcRes = await admin.graphql(`#graphql
+        query GetWholesaleFunction {
+          shopifyFunctions(first: 25) {
+            nodes { id title apiType }
+          }
+        }
+      `);
+      const funcData = await funcRes.json();
+      const fn = funcData?.data?.shopifyFunctions?.nodes?.find(
+        (f) =>
+          f.apiType === "cart_lines_discounts_generate.run" ||
+          (f.title ?? "").toLowerCase().includes("wholesale")
+      );
+
+      if (fn) {
+        const createRes = await admin.graphql(
+          `#graphql
+            mutation CreateAutoDiscount($discount: DiscountAutomaticAppInput!) {
+              discountAutomaticAppCreate(automaticAppDiscount: $discount) {
+                automaticAppDiscount { discountId }
+                userErrors { field message }
+              }
+            }
+          `,
+          {
+            variables: {
+              discount: {
+                title: "B2B Wholesale Pricing",
+                functionId: fn.id,
+                startsAt: new Date().toISOString(),
+                discountClasses: ["PRODUCT"],
+                combinesWith: { orderDiscounts: true, productDiscounts: true, shippingDiscounts: true },
+              },
+            },
+          }
+        );
+        const createData = await createRes.json();
+        discountGid = createData?.data?.discountAutomaticAppCreate?.automaticAppDiscount?.discountId ?? null;
+
+        // Persist the new discount GID to shop metafield (use real shopGid, not "shop")
+        if (discountGid && shopGid) {
+          await admin.graphql(
+            `#graphql
+              mutation SaveActiveDiscount($metafields: [MetafieldsSetInput!]!) {
+                metafieldsSet(metafields: $metafields) { userErrors { field message } }
+              }
+            `,
+            {
+              variables: {
+                metafields: [{
+                  ownerId: shopGid,
+                  namespace: "$app",
+                  key: "active_discount_id",
+                  type: "single_line_text_field",
+                  value: discountGid,
+                }],
+              },
+            }
+          );
+        }
+      }
+    }
+
+    if (!discountGid) {
+      return { intent: "saveTags", ok: false, error: "Could not find or create the B2B discount. Ensure the wholesale-price-discount function is deployed." };
+    }
+
+    // 2. Read current tier_tags_map from discount metafield
+    const existingRes = await admin.graphql(
+      `#graphql
+        query GetExistingMap($id: ID!) {
+          discountNode(id: $id) {
+            metafield(namespace: "$app", key: "tier_tags_map") { value }
+          }
+        }
+      `,
+      { variables: { id: discountGid } }
+    );
+    const existingData = await existingRes.json();
+    let tierTagsMap = {};
+    try {
+      const raw = existingData?.data?.discountNode?.metafield?.value;
+      tierTagsMap = raw ? JSON.parse(raw) : {};
+    } catch { tierTagsMap = {}; }
+
+    // 3. Merge this tier's tags into the map
+    if (tags.length > 0) {
+      tierTagsMap[priceKey] = tags;
+    } else {
+      delete tierTagsMap[priceKey];
+    }
+
+    // 4. Save updated map to discount metafield
+    const saveRes = await admin.graphql(
+      `#graphql
+        mutation SaveTierTagsMap($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) {
+            metafields { id key }
+            userErrors { field message }
+          }
+        }
+      `,
+      {
+        variables: {
+          metafields: [{
+            ownerId: discountGid,
+            namespace: "$app",
+            key: "tier_tags_map",
+            type: "json",
+            value: JSON.stringify(tierTagsMap),
+          }],
+        },
+      }
+    );
+    const saveData = await saveRes.json();
+    const userErrors = saveData?.data?.metafieldsSet?.userErrors ?? [];
+    if (userErrors.length) {
+      return { intent: "saveTags", ok: false, error: userErrors.map((e) => e.message).join("; ") };
+    }
+
+    // ── Step 4.5: Persist store tier tags to Firestore per store ─────────────
+    if (session?.shop) {
+      await saveStoreTierTags(session.shop, tierTagsMap);
+    }
+
+    // ── Step 5: Sync existing customers who have the configured tags ──────────
+    // Fire-and-forget: update pricing_tiers metafield on customers that have the
+    // configured tags. This makes the discount function work immediately without webhooks.
+    syncAllCustomerTierMetafields(admin, tierTagsMap).catch((e) =>
+      console.error("[saveTags] Customer sync failed:", e)
+    );
+
+    return { intent: "saveTags", ok: true, discountGid, tierTagsMap };
   }
 
   // Fetch paginated variants for an expanded product
@@ -467,17 +770,247 @@ export const action = async ({ request }) => {
 
 export function shouldRevalidate(arg) {
   const intent = arg.formData?.get("intent") || arg.actionResult?.intent;
-  if (intent === "fetchProducts" || intent === "fetchVariants" || intent === "save") {
+  if (
+    intent === "fetchProducts" ||
+    intent === "fetchVariants" ||
+    intent === "save" ||
+    intent === "saveTags"
+  ) {
     return false;
   }
   return arg.defaultShouldRevalidate;
+}
+
+// ─── CustomerTagsSection Component ────────────────────────────────────────────
+function CustomerTagsSection({
+  allCustomerTags,
+  currentTierTags,
+  priceKey,
+  activeDiscountId,
+  tierName,
+}) {
+  const tagsFetcher = useFetcher();
+  const [selectedTags, setSelectedTags] = useState(currentTierTags ?? []);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [customTagInput, setCustomTagInput] = useState("");
+  const [tagSaving, setTagSaving] = useState(false);
+  const [tagSaveSuccess, setTagSaveSuccess] = useState(false);
+  const [tagSaveError, setTagSaveError] = useState(null);
+  const pendingTagSaveRef = useRef(false);
+
+  // Sync tags when tier changes
+  const prevPriceKeyRef = useRef(priceKey);
+  useEffect(() => {
+    if (prevPriceKeyRef.current !== priceKey) {
+      prevPriceKeyRef.current = priceKey;
+      setSelectedTags(currentTierTags ?? []);
+      setTagSaveSuccess(false);
+      setTagSaveError(null);
+      setPickerOpen(false);
+    }
+  }, [priceKey, currentTierTags]);
+
+  // Handle saveTags response
+  useEffect(() => {
+    if (!tagsFetcher.data || !pendingTagSaveRef.current) return;
+    if (tagsFetcher.data.intent !== "saveTags") return;
+    pendingTagSaveRef.current = false;
+    setTagSaving(false);
+    if (tagsFetcher.data.ok) {
+      setTagSaveSuccess(true);
+      setTagSaveError(null);
+      if (typeof shopify !== "undefined") shopify.toast.show("Tags saved!");
+    } else {
+      setTagSaveError(tagsFetcher.data.error ?? "Failed to save tags.");
+    }
+  }, [tagsFetcher.data]);
+
+  const toggleTag = useCallback((tag) => {
+    setSelectedTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    );
+    setTagSaveSuccess(false);
+    setTagSaveError(null);
+  }, []);
+
+  const removeTag = useCallback((tag) => {
+    setSelectedTags((prev) => prev.filter((t) => t !== tag));
+    setTagSaveSuccess(false);
+    setTagSaveError(null);
+  }, []);
+
+  const addCustomTags = useCallback(() => {
+    if (!customTagInput.trim()) return;
+    const newTags = customTagInput
+      .split(",")
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0 && !selectedTags.includes(t));
+    if (newTags.length > 0) setSelectedTags((prev) => [...prev, ...newTags]);
+    setCustomTagInput("");
+    setTagSaveSuccess(false);
+    setTagSaveError(null);
+  }, [customTagInput, selectedTags]);
+
+  const handleSaveTags = useCallback(() => {
+    if (tagSaving) return;
+    setTagSaving(true);
+    setTagSaveSuccess(false);
+    setTagSaveError(null);
+    setPickerOpen(false);
+    pendingTagSaveRef.current = true;
+    const fd = new FormData();
+    fd.append("intent", "saveTags");
+    fd.append("priceKey", priceKey);
+    fd.append("tags", JSON.stringify(selectedTags));
+    if (activeDiscountId) fd.append("activeDiscountId", activeDiscountId);
+    tagsFetcher.submit(fd, { method: "POST" });
+  }, [tagSaving, priceKey, selectedTags, activeDiscountId, tagsFetcher]);
+
+  const filteredTags = allCustomerTags.filter((t) =>
+    t.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  return (
+    <s-section>
+      <s-stack direction="block" gap="base">
+
+        {/* ── Header row ── */}
+        <s-stack direction="inline" gap="base" justifyContent="space-between" alignItems="center">
+          <s-stack direction="block" gap="small-200">
+            <s-text type="heading">Customer Tag Access</s-text>
+            <s-text tone="subdued">
+              Only customers with a matching tag receive <strong>{tierName}</strong> pricing at checkout.
+            </s-text>
+          </s-stack>
+          <s-stack direction="inline" gap="small">
+            <s-button
+              variant="secondary"
+              onClick={() => { setPickerOpen((o) => !o); setSearchQuery(""); }}
+            >
+              {pickerOpen ? "Close Tag Picker" : `Select Tags${allCustomerTags.length ? ` (${allCustomerTags.length})` : ""}`}
+            </s-button>
+            <s-button
+              variant="primary"
+              onClick={handleSaveTags}
+              disabled={tagSaving}
+              {...(tagSaving ? { loading: true } : {})}
+            >
+              {tagSaving ? "Saving…" : "Save Tags"}
+            </s-button>
+          </s-stack>
+        </s-stack>
+
+        {/* ── Banners ── */}
+        {tagSaveError && <s-banner tone="critical">{tagSaveError}</s-banner>}
+        {tagSaveSuccess && (
+          <s-banner tone="success">
+            Tags saved! Customers with matching tags will receive {tierName} pricing.
+          </s-banner>
+        )}
+
+        {/* ── Selected tags badges ── */}
+        <s-stack direction="block" gap="small-200">
+          <s-text tone="subdued">
+            Configured tags ({selectedTags.length}):
+          </s-text>
+          {selectedTags.length === 0 ? (
+            <s-text tone="subdued">
+              <em>No tags set — this tier applies to all customers.</em>
+            </s-text>
+          ) : (
+            <s-stack direction="inline" gap="small-200" wrap="wrap">
+              {selectedTags.map((tag) => (
+                <s-tag key={tag} onRemove={() => removeTag(tag)}>
+                  {tag}
+                </s-tag>
+              ))}
+            </s-stack>
+          )}
+        </s-stack>
+
+        {/* ── Custom tag input ── */}
+        <s-stack direction="inline" gap="small" alignItems="end">
+          <s-stack direction="block" gap="small-200" grow>
+            <s-text>Add custom tags (comma-separated):</s-text>
+            <s-text-field
+              value={customTagInput}
+              placeholder="e.g. vip, reseller, partner"
+              onChange={(e) =>
+                setCustomTagInput(e.currentTarget?.value ?? e.target?.value ?? "")
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); addCustomTags(); }
+              }}
+            />
+          </s-stack>
+          <s-button variant="secondary" onClick={addCustomTags}>
+            Add
+          </s-button>
+        </s-stack>
+
+        {/* ── Inline tag picker (shown when pickerOpen) ── */}
+        {pickerOpen && (
+          <s-box
+            padding="base"
+            borderWidth="base"
+            borderRadius="base"
+            background="subdued"
+          >
+            <s-stack direction="block" gap="base">
+              {/* Search */}
+              <s-text-field
+                value={searchQuery}
+                placeholder="Search customer tags…"
+                onChange={(e) =>
+                  setSearchQuery(e.currentTarget?.value ?? e.target?.value ?? "")
+                }
+                label="Search"
+                labelHidden
+              />
+
+              {/* Tag list */}
+              {allCustomerTags.length === 0 ? (
+                <s-banner tone="info">
+                  No customer tags found in your store. Add tags to customers first, or type custom tags above.
+                </s-banner>
+              ) : filteredTags.length === 0 ? (
+                <s-text tone="subdued">No tags match your search.</s-text>
+              ) : (
+                <s-stack direction="block" gap="small-200">
+                  {filteredTags.map((tag) => (
+                    <s-checkbox
+                      key={tag}
+                      checked={selectedTags.includes(tag)}
+                      onChange={() => toggleTag(tag)}
+                      label={tag}
+                    >
+                    </s-checkbox>
+                  ))}
+                </s-stack>
+              )}
+
+              <s-stack direction="inline" gap="small" justifyContent="end">
+                <s-button
+                  variant="secondary"
+                  onClick={() => setPickerOpen(false)}
+                >
+                  Done
+                </s-button>
+              </s-stack>
+            </s-stack>
+          </s-box>
+        )}
+      </s-stack>
+    </s-section>
+  );
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function Pricing() {
   const loaderData = useLoaderData();
-  const { tierDef, priceKey, qtyKey, currencyCode } = loaderData;
+  const { tierDef, priceKey, qtyKey, currencyCode, allCustomerTags, currentTierTags, activeDiscountId } = loaderData;
   const fetcher = useFetcher();
 
   // Products and product pagination state
@@ -592,7 +1125,9 @@ export default function Pricing() {
             const pk = editKey(v.id, priceKey);
             if (!(pk in nextEdits)) {
               const mf = v.metafields?.nodes?.find((m) => m.key === priceKey);
-              const orig = mf ? (parseMoneyAmount(mf.value) ?? v.price) : v.price;
+              // Normalise to 2dp – same as mergeVariantsIntoEdits
+              const rawAmt = mf ? (parseMoneyAmount(mf.value) ?? v.price) : v.price;
+              const orig = normalizeMoneyAmount(rawAmt);
               nextEdits[pk] = { value: orig, originalValue: orig, type: "money", key: priceKey, ownerId: v.id };
             }
           }
@@ -668,7 +1203,9 @@ export default function Pricing() {
     setEdits((prev) => {
       const existing = prev[k];
       const mf = variant.metafields?.nodes?.find((m) => m.key === priceKey);
-      const orig = existing?.originalValue ?? (mf ? (parseMoneyAmount(mf?.value) ?? variant.price) : variant.price);
+      const rawOrig = existing?.originalValue ?? (mf ? (parseMoneyAmount(mf?.value) ?? variant.price) : variant.price);
+      const orig = normalizeMoneyAmount(rawOrig);
+      // Store newValue as-is (the money field returns a string); it will be normalised on save
       return {
         ...prev,
         [k]: { value: newValue, originalValue: orig, type: "money", key: priceKey, ownerId: variant.id },
@@ -799,17 +1336,25 @@ export default function Pricing() {
 
     const metafieldsToSave = [];
     for (const [, entry] of Object.entries(edits)) {
-      if (String(entry.value ?? "") === String(entry.originalValue ?? "")) continue;
+      // Normalise both sides to canonical 2dp strings before the dirty-check
+      let currentVal = entry.value;
+      let originalVal = entry.originalValue;
+      if (entry.type === "money") {
+        currentVal = normalizeMoneyAmount(entry.value);
+        originalVal = normalizeMoneyAmount(entry.originalValue);
+      }
+      if (String(currentVal ?? "") === String(originalVal ?? "")) continue;
+
       let serialized;
       if (entry.type === "money") {
-        const amount = String(entry.value ?? "").trim();
-        if (!amount) continue;
-        const n = Number(amount);
+        // currentVal is already a 2dp string like "500.95"
+        const n = parseFloat(currentVal);
         if (!Number.isFinite(n) || n < 0) {
-          setSaveError(`Invalid price: ${amount}`);
+          setSaveError(`Invalid price: ${currentVal}`);
           return;
         }
-        serialized = JSON.stringify({ amount, currency_code: currencyCode });
+        // Shopify money metafield MUST have amount as a 2-decimal-place string
+        serialized = JSON.stringify({ amount: currentVal, currency_code: currencyCode });
       } else if (entry.type === "number_integer") {
         const n = Number(entry.value);
         if (!Number.isInteger(n) || n < 1) {
@@ -870,7 +1415,7 @@ export default function Pricing() {
   }, []);
 
   // show toast
-    if(saveSuccess) shopify.toast.show('Saved Successfully');
+  if (saveSuccess) shopify.toast.show('Saved Successfully');
 
   // ── Render ───────────────────────────────────────────────────────────────
 
@@ -894,6 +1439,16 @@ export default function Pricing() {
 
       {saveError && <s-banner tone="critical">{saveError}</s-banner>}
       {saveSuccess && <s-banner tone="success">Pricing saved successfully!</s-banner>}
+
+      {/* ── Customer Tag Access Section ── */}
+      <CustomerTagsSection
+        allCustomerTags={allCustomerTags ?? []}
+        currentTierTags={currentTierTags ?? []}
+        priceKey={priceKey}
+        activeDiscountId={activeDiscountId}
+        tierName={tierDef.name}
+      />
+
       <s-section>
 
         <s-table>
@@ -1035,21 +1590,21 @@ export default function Pricing() {
         </s-stack>
 
       </s-section>
-        {hasChanges && (
-          <s-stack direction="inline" gap="base" justifyContent="end" alignItems="center" paddingBlockStart="base">
-            <s-button variant="secondary" onClick={handleCancel} disabled={saving || productPageLoading}>
-              Cancel
-            </s-button>
-            <s-button
-              variant="primary"
-              onClick={handleSave}
-              disabled={saving || productPageLoading}
-              {...(saving ? { loading: true } : {})}
-            >
-              {saving ? "Saving..." : "Save"}
-            </s-button>
-          </s-stack>
-        )}
+      {hasChanges && (
+        <s-stack direction="inline" gap="base" justifyContent="end" alignItems="center" paddingBlockStart="base">
+          <s-button variant="secondary" onClick={handleCancel} disabled={saving || productPageLoading}>
+            Cancel
+          </s-button>
+          <s-button
+            variant="primary"
+            onClick={handleSave}
+            disabled={saving || productPageLoading}
+            {...(saving ? { loading: true } : {})}
+          >
+            {saving ? "Saving..." : "Save"}
+          </s-button>
+        </s-stack>
+      )}
     </s-page>
   );
 }

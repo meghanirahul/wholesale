@@ -1,15 +1,47 @@
-query CartInput {
+query Input {
   cart {
     lines {
       id
+      quantity
       cost {
-        subtotalAmount {
+        amountPerQuantity {
           amount
         }
       }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          id
+          vip_price: metafield(namespace: "$app", key: "vip_pricing") {
+            value
+            jsonValue
+          }
+          vip_min: metafield(namespace: "$app", key: "vip_pricing_min") {
+            value
+          }
+          wholesale_price: metafield(namespace: "$app", key: "wholesale_pricing") {
+            value
+            jsonValue
+          }
+          wholesale_min: metafield(namespace: "$app", key: "wholesale_pricing_min") {
+            value
+          }
+          b2b_price: metafield(namespace: "$app", key: "b2b_pricing") {
+            value
+            jsonValue
+          }
+          b2b_min: metafield(namespace: "$app", key: "b2b_pricing_min") {
+            value
+          }
+        }
+      }
     }
-  }
-  discount {
-    discountClasses
+    buyerIdentity {
+      customer {
+        pricing_tiers: metafield(namespace: "$app", key: "pricing_tiers") {
+          value
+        }
+      }
+    }
   }
 }

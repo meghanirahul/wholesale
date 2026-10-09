@@ -1,6 +1,6 @@
 {
   "payload": {
-    "export": "cart-delivery-options-discounts-generate-run",
+    "export": "cart_delivery_options_discounts_generate_run",
     "target": "cart.delivery-options.discounts.generate.run",
     "input": {
       "discount": {
@@ -8,9 +8,9 @@
       },
       "cart": {
         "deliveryGroups": [
-          {
-            "id": "gid://shopify/CartDeliveryGroup/1"
-          }
+           {
+             "id": "gid://shopify/CartDeliveryGroup/1"
+           }
         ]
       }
     },
@@ -30,7 +30,7 @@
                 ],
                 "value": {
                   "percentage": {
-                    "value": 100.0
+                    "value": "100.0"
                   }
                 }
               }

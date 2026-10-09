@@ -1,4 +1,4 @@
-query DeliveryInput {
+query Input {
   cart {
     deliveryGroups {
       id

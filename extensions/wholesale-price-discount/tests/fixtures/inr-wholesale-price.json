@@ -1,0 +1,73 @@
+{
+    "payload": {
+        "export": "cart_lines_discounts_generate_run",
+        "target": "cart.lines.discounts.generate.run",
+        "input": {
+            "cart": {
+                "lines": [
+                    {
+                        "id": "gid://shopify/CartLine/0",
+                        "quantity": 1,
+                        "cost": {
+                            "amountPerQuantity": {
+                                "amount": "949.95"
+                            }
+                        },
+                        "merchandise": {
+                            "__typename": "ProductVariant",
+                            "id": "gid://shopify/ProductVariant/1",
+                            "vipPrice": null,
+                            "vipMin": null,
+                            "wholesalePrice": {
+                                "value": "{\"amount\":\"500.85\",\"currency_code\":\"INR\"}"
+                            },
+                            "wholesaleMin": {
+                                "value": "1"
+                            },
+                            "b2bPrice": null,
+                            "b2bMin": null
+                        }
+                    }
+                ],
+                "buyerIdentity": {
+                    "customer": {
+                        "pricingTiers": {
+                            "value": "wholesale_pricing"
+                        }
+                    }
+                }
+            },
+            "discount": {
+                "metafield": null
+            }
+        },
+        "inputBytes": 400,
+        "expectedOutput": {
+            "operations": [
+                {
+                    "productDiscountsAdd": {
+                        "selectionStrategy": "ALL",
+                        "candidates": [
+                            {
+                                "message": null,
+                                "targets": [
+                                    {
+                                        "cartLine": {
+                                            "id": "gid://shopify/CartLine/0"
+                                        }
+                                    }
+                                ],
+                                "value": {
+                                    "fixedAmount": {
+                                        "amount": "449.1",
+                                        "appliesToEachItem": true
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+}

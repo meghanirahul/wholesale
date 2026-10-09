@@ -1,0 +1,74 @@
+[
+  {
+    "createdAt": "2026-10-08 13:55:27",
+    "createdBy": "gid://shopify/User/147850049",
+    "versionTag": "wholesale-pricing-9",
+    "status": "inactive",
+    "versionId": "gid://shopify/Version/1159887126529",
+    "message": ""
+  },
+  {
+    "createdAt": "2026-10-07 18:47:56",
+    "createdBy": "gid://shopify/User/147850049",
+    "versionTag": "wholesale-pricing-8",
+    "status": "active",
+    "versionId": "gid://shopify/Version/1158696861697",
+    "message": ""
+  },
+  {
+    "createdAt": "2026-10-07 18:39:16",
+    "createdBy": "gid://shopify/User/147850049",
+    "versionTag": "wholesale-pricing-7",
+    "status": "inactive",
+    "versionId": "gid://shopify/Version/1158687293441",
+    "message": ""
+  },
+  {
+    "createdAt": "2026-10-07 18:12:10",
+    "createdBy": "gid://shopify/User/147850049",
+    "versionTag": "wholesale-pricing-6",
+    "status": "inactive",
+    "versionId": "gid://shopify/Version/1158659276801",
+    "message": ""
+  },
+  {
+    "createdAt": "2026-10-07 18:02:20",
+    "createdBy": "gid://shopify/User/147850049",
+    "versionTag": "wholesale-pricing-5",
+    "status": "inactive",
+    "versionId": "gid://shopify/Version/1158648463361",
+    "message": ""
+  },
+  {
+    "createdAt": "2026-10-07 17:33:14",
+    "createdBy": "gid://shopify/User/147850049",
+    "versionTag": "wholesale-pricing-4",
+    "status": "inactive",
+    "versionId": "gid://shopify/Version/1158619463681",
+    "message": ""
+  },
+  {
+    "createdAt": "2026-10-06 18:15:42",
+    "createdBy": "gid://shopify/User/147850049",
+    "versionTag": "wholesale-pricing-3",
+    "status": "inactive",
+    "versionId": "gid://shopify/Version/1157167349761",
+    "message": ""
+  },
+  {
+    "createdAt": "2026-10-06 17:27:06",
+    "createdBy": "gid://shopify/User/147850049",
+    "versionTag": "wholesale-pricing-2",
+    "status": "inactive",
+    "versionId": "gid://shopify/Version/1157110202369",
+    "message": ""
+  },
+  {
+    "createdAt": "2026-10-05 17:23:31",
+    "createdBy": "gid://shopify/User/147850049",
+    "versionTag": "b2b-pricing-1",
+    "status": "inactive",
+    "versionId": "gid://shopify/Version/1155528261633",
+    "message": ""
+  }
+]

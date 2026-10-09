@@ -1,13 +1,12 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "ef59274038aaf0fd7ceaee5ea7a38cea"
+client_id = "df06191ac3aad61382ce82af6de1e172"
 name = "Wholesale Pricing"
 application_url = "https://example.com"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-10"
@@ -22,7 +21,7 @@ api_version = "2026-10"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,write_metaobjects,write_metaobject_definitions"
+scopes = "write_products,write_metaobjects,write_metaobject_definitions,read_customers,write_discounts"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
@@ -53,6 +52,10 @@ type = "multi_line_text_field"
 
 [metafields]
 api_version = "2026-07"
+
+[discount.metafields.app.tier_tags_map]
+type = "json"
+name = "Tier Customer Tags Map"
 
 [variant.metafields.app.vip_pricing]
 type = "money"

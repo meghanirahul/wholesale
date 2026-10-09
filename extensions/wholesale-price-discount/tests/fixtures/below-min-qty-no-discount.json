@@ -1,0 +1,49 @@
+{
+    "payload": {
+        "export": "cart_lines_discounts_generate_run",
+        "target": "cart.lines.discounts.generate.run",
+        "input": {
+            "cart": {
+                "lines": [
+                    {
+                        "id": "gid://shopify/CartLine/2",
+                        "quantity": 2,
+                        "cost": {
+                            "amountPerQuantity": {
+                                "amount": "15.00"
+                            }
+                        },
+                        "merchandise": {
+                            "__typename": "ProductVariant",
+                            "id": "gid://shopify/ProductVariant/3",
+                            "vipPrice": {
+                                "value": "{\"amount\":\"9.00\",\"currency_code\":\"USD\"}"
+                            },
+                            "vipMin": {
+                                "value": "5"
+                            },
+                            "wholesalePrice": null,
+                            "wholesaleMin": null,
+                            "b2bPrice": null,
+                            "b2bMin": null
+                        }
+                    }
+                ],
+                "buyerIdentity": {
+                    "customer": {
+                        "pricingTiers": {
+                            "value": "vip_pricing"
+                        }
+                    }
+                }
+            },
+            "discount": {
+                "metafield": null
+            }
+        },
+        "inputBytes": 320,
+        "expectedOutput": {
+            "operations": []
+        }
+    }
+}

@@ -1,0 +1,45 @@
+╭─ info ───────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  Using .env for default values:                                              │
+│                                                                              │
+│    • Org:             Comeasy                                                │
+│    • App:             Wholesale Pricing                                      │
+│                                                                              │
+│   You can pass `--reset` to your command to reset your app configuration.    │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+Releasing a new app version as part of Wholesale Pricing
+
+   wholesale-price-action │ Bundling UI extension wholesale-price-action...
+    wholesale-price-block │ Bundling UI extension wholesale-price-block...
+  wholesale-price-variant │ Bundling UI extension wholesale-price-variant...
+
+[2K[1A[2K[G wholesale-price-discount │ Building function wholesale-price-discount...
+
+[2K[1A[2K[G wholesale-price-discount │     Finished
+
+[2K[1A[2K[G wholesale-price-discount │  `release` profile [optimized] target(s) in 0.17s
+
+[2K[1A[2K[G    wholesale-price-block │ wholesale-price-block successfully built in 261ms
+(24.9 KB original, ~8.8 KB compressed)
+
+[2K[1A[2K[G  wholesale-price-variant │ wholesale-price-variant successfully built in 190ms
+(30.6 KB original, ~10.2 KB compressed)
+
+[2K[1A[2K[G   wholesale-price-action │ wholesale-price-action successfully built in 215ms
+(34.0 KB original, ~11.0 KB compressed)
+
+Running validation ...
+[2K[1A[2K[GReleasing an app version ...
+[2K[1A[2K[G
+╭─ success ────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  New version released to users.                                              │
+│                                                                              │
+│  wholesale-pricing-12 [1]                                                    │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+[1] https://dev.shopify.com/dashboard/131084813/apps/431790161921/versions/1159963967489
+
