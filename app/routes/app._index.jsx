@@ -35,12 +35,12 @@ const LIQUID_SNIPPET = `{%- comment -%}
   assign customer_tier = nil
 
   if customer
-    assign vip_tags       = shop.metafields.app.vip_tier_tags.value       | split: ","
-    assign wholesale_tags = shop.metafields.app.wholesale_tier_tags.value | split: ","
-    assign b2b_tags       = shop.metafields.app.b2b_tier_tags.value       | split: ","
+    assign vip_tags       = shop.metafields.app--431790161921.vip_tier_tags.value | split: ","
+    assign wholesale_tags = shop.metafields.app--431790161921.wholesale_tier_tags.value | split: ","
+    assign b2b_tags       = shop.metafields.app--431790161921.b2b_tier_tags.value       | split: ","
 
     for tag in vip_tags
-      assign tag_clean = tag | strip | downcase
+      assign tag_clean = tag | strip 
       if tag_clean != blank and customer.tags contains tag_clean
         assign customer_tier = "vip_pricing"
         break
@@ -49,7 +49,7 @@ const LIQUID_SNIPPET = `{%- comment -%}
 
     if customer_tier == nil
       for tag in wholesale_tags
-        assign tag_clean = tag | strip | downcase
+        assign tag_clean = tag | strip 
         if tag_clean != blank and customer.tags contains tag_clean
           assign customer_tier = "wholesale_pricing"
           break
@@ -59,7 +59,7 @@ const LIQUID_SNIPPET = `{%- comment -%}
 
     if customer_tier == nil
       for tag in b2b_tags
-        assign tag_clean = tag | strip | downcase
+        assign tag_clean = tag | strip 
         if tag_clean != blank and customer.tags contains tag_clean
           assign customer_tier = "b2b_pricing"
           break
@@ -72,27 +72,26 @@ const LIQUID_SNIPPET = `{%- comment -%}
   assign tier_price_amount = nil
 
   if customer_tier == "vip_pricing"
-    assign tier_mf = display_variant.metafields.app.vip_pricing
+    assign tier_mf = display_variant.metafields.app--431790161921.vip_pricing
     if tier_mf
-      assign tier_price_amount = tier_mf.value.amount
+      assign tier_price_amount = tier_mf.value
     endif
   elsif customer_tier == "wholesale_pricing"
-    assign tier_mf = display_variant.metafields.app.wholesale_pricing
+    assign tier_mf = display_variant.metafields.app--431790161921.wholesale_pricing
     if tier_mf
-      assign tier_price_amount = tier_mf.value.amount
+      assign tier_price_amount = tier_mf.value
     endif
   elsif customer_tier == "b2b_pricing"
-    assign tier_mf = display_variant.metafields.app.b2b_pricing
+    assign tier_mf = display_variant.metafields.app--431790161921.b2b_pricing
     if tier_mf
-      assign tier_price_amount = tier_mf.value.amount
+      assign tier_price_amount = tier_mf.value
     endif
   endif
 -%}
-
 {%- comment -%} ── 4. Display price ─────────────────────────────────── {%- endcomment -%}
 {% if tier_price_amount and tier_price_amount != blank and tier_price_amount != "0.0" %}
   <span class="price tier-price">
-    {{ tier_price_amount | times: 100 | money }}
+    {{ tier_price_amount | money }}
   </span>
   <span class="price price--compare">
     <s>{{ display_variant.price | money }}</s>
