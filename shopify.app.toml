@@ -19,19 +19,16 @@ api_version = "2026-10"
   uri = "/webhooks/app/uninstalled"
   topics = [ "app/uninstalled" ]
 
-  # ── Mandatory GDPR webhooks (required by Shopify for all public apps) ────────
+  # ── Mandatory GDPR webhooks — must use compliance_topics, NOT topics ────────
 
   [[webhooks.subscriptions]]
-  uri = "/webhooks/customers/data_request"
-  topics = [ "customers/data_request" ]
+  compliance_topics = [
+    "customers/data_request",
+    "customers/redact",
+    "shop/redact"
+  ]
+  uri = "/webhooks/gdpr"
 
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/customers/redact"
-  topics = [ "customers/redact" ]
-
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/shop/redact"
-  topics = [ "shop/redact" ]
 
 
 [access_scopes]
