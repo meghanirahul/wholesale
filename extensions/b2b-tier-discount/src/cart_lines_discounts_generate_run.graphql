@@ -1,0 +1,41 @@
+query Input(
+  $tags: [String!] = []
+  $priceKey: String = "b2b_pricing"
+  $qtyKey: String = "b2b_pricing_min"
+) {
+  presentmentCurrencyRate
+  cart {
+    buyerIdentity {
+      customer {
+        has_tag: hasAnyTag(tags: $tags)
+      }
+    }
+    lines {
+      id
+      quantity
+      cost {
+        amountPerQuantity {
+          amount
+          currencyCode
+        }
+      }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          id
+          tier_price: metafield(namespace: "$app", key: $priceKey) {
+            value
+          }
+          tier_min: metafield(namespace: "$app", key: $qtyKey) {
+            value
+          }
+        }
+      }
+    }
+  }
+  discount {
+    tier_tags: metafield(namespace: "$app", key: "tier_customer_tags") {
+      value
+    }
+  }
+}

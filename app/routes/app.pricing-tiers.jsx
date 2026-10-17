@@ -27,23 +27,17 @@ export const loader = async ({ request }) => {
     const getTiers = await tiersResponse.json();
     const definitionNodes = getTiers?.data?.metafieldDefinitions?.nodes ?? [];
 
-    // Map definitions by key
     const defMap = {};
     for (const def of definitionNodes) {
         defMap[def.key] = def;
     }
 
-    // Automatically discover and sync tiers as in the variant block:
-    // - Any key ending with "_pricing" is a price definition
-    // - Companion quantity definition is "${priceKey}_min"
     const tiers = Object.keys(defMap)
         .filter((key) => key.endsWith("_pricing"))
         .map((priceKey) => {
             const priceDef = defMap[priceKey];
             const qtyKey = `${priceKey}_min`;
             const qtyDef = defMap[qtyKey] ?? null;
-
-            // Extract numeric ID only from the GID (e.g. "gid://shopify/MetafieldDefinition/12345" -> "12345")
             const numericId = priceDef.id ? priceDef.id.split("/").pop() : "";
 
             return {
@@ -65,35 +59,51 @@ export const loader = async ({ request }) => {
 export default function PricingTiers() {
     const { tiers = [] } = useLoaderData();
     const navigate = useNavigate();
-    console.log(tiers)
 
     return (
-        <s-page heading="Tier Pricings">
-            <s-section>
+        <s-page
+            heading="Pricing Tiers"
+            description="Select a tier to set per-variant wholesale prices and minimum order quantities. Discounts apply automatically at checkout via Shopify Functions."
+        >
+            <s-section heading="Your pricing tiers">
                 {tiers.length === 0 ? (
                     <s-banner tone="info">
-                        No wholesale pricing tiers found. Add variant metafield definitions in your app configuration.
+                        No wholesale pricing tiers found. Add variant metafield definitions
+                        with keys ending in <s-text type="code">_pricing</s-text> in Shopify
+                        Admin → Settings → Custom data → Product variants.
                     </s-banner>
                 ) : (
-                    <s-grid gridTemplateColumns="repeat(auto-fill, minmax(280px, 1fr))" gap="base">
+                    <s-grid columns="3" gap="base">
                         {tiers.map((tier) => (
                             <s-clickable
                                 key={tier.numericId || tier.priceKey}
-                                href={`/app/pricing?id=${tier.numericId}`}
-                                onClick={(e) => {
-                                    e.preventDefault();
-                                    navigate(`/app/pricing?id=${tier.numericId}`);
-                                }}
+                                onClick={() => navigate(`/app/pricing?id=${tier.numericId}`)}
                                 padding="base"
                                 borderRadius="base"
                                 border="base"
                             >
-                                <s-stack direction="block" gap="small">
-                                    <s-text type="strong">{tier.name}</s-text>
-                                    <s-text tone="neutral">Pricing Key: {tier.priceKey}</s-text>
-                                    {tier.qtyKey ? (
-                                        <s-text tone="neutral">Min Quantity: {tier.qtyName || tier.qtyKey}</s-text>
-                                    ) : null}
+                                <s-stack direction="block" gap="small-400">
+                                    <s-stack direction="inline" justifyContent="space-between" alignItems="center">
+                                        <s-text type="heading">{tier.name}</s-text>
+                                        <s-badge tone="success">Active</s-badge>
+                                    </s-stack>
+
+                                    <s-stack direction="block" gap="small-200">
+                                        <s-stack direction="inline" gap="small-300" alignItems="center">
+                                            <s-text tone="subdued">Price key:</s-text>
+                                            <s-text type="code">{tier.priceKey}</s-text>
+                                        </s-stack>
+                                        {tier.qtyKey && (
+                                            <s-stack direction="inline" gap="small-300" alignItems="center">
+                                                <s-text tone="subdued">Min qty key:</s-text>
+                                                <s-text type="code">{tier.qtyKey}</s-text>
+                                            </s-stack>
+                                        )}
+                                    </s-stack>
+
+                                    <s-stack direction="inline" justifyContent="end">
+                                        <s-text tone="subdued">Edit pricing →</s-text>
+                                    </s-stack>
                                 </s-stack>
                             </s-clickable>
                         ))}

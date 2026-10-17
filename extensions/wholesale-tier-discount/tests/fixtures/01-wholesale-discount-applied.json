@@ -4,62 +4,53 @@
         "target": "cart.lines.discounts.generate.run",
         "input": {
             "cart": {
+                "buyerIdentity": {
+                    "customer": {
+                        "has_wholesale": true,
+                        "has_vip": false
+                    }
+                },
                 "lines": [
                     {
-                        "id": "gid://shopify/CartLine/0",
-                        "quantity": 1,
+                        "id": "gid://shopify/CartLine/1",
+                        "quantity": 2,
                         "cost": {
                             "amountPerQuantity": {
-                                "amount": "949.95"
+                                "amount": "20.00",
+                                "currencyCode": "USD"
                             }
                         },
                         "merchandise": {
                             "__typename": "ProductVariant",
-                            "id": "gid://shopify/ProductVariant/1",
-                            "vipPrice": null,
-                            "vipMin": null,
-                            "wholesalePrice": {
-                                "value": "{\"amount\":\"500.85\",\"currency_code\":\"INR\"}"
+                            "id": "gid://shopify/ProductVariant/100",
+                            "wholesale_price": {
+                                "value": "15.00"
                             },
-                            "wholesaleMin": {
+                            "wholesale_min": {
                                 "value": "1"
-                            },
-                            "b2bPrice": null,
-                            "b2bMin": null
+                            }
                         }
                     }
-                ],
-                "buyerIdentity": {
-                    "customer": {
-                        "pricingTiers": {
-                            "value": "wholesale_pricing"
-                        }
-                    }
-                }
-            },
-            "discount": {
-                "metafield": null
+                ]
             }
         },
-        "inputBytes": 400,
-        "expectedOutput": {
+        "output": {
             "operations": [
                 {
                     "productDiscountsAdd": {
                         "selectionStrategy": "ALL",
                         "candidates": [
                             {
-                                "message": null,
                                 "targets": [
                                     {
                                         "cartLine": {
-                                            "id": "gid://shopify/CartLine/0"
+                                            "id": "gid://shopify/CartLine/1"
                                         }
                                     }
                                 ],
                                 "value": {
                                     "fixedAmount": {
-                                        "amount": "449.1",
+                                        "amount": "5.0",
                                         "appliesToEachItem": true
                                     }
                                 }

@@ -1,47 +1,41 @@
-query Input {
+query Input(
+  $tags: [String!] = []
+  $priceKey: String = "vip_pricing"
+  $qtyKey: String = "vip_pricing_min"
+) {
+  presentmentCurrencyRate
   cart {
+    buyerIdentity {
+      customer {
+        has_tag: hasAnyTag(tags: $tags)
+      }
+    }
     lines {
       id
       quantity
       cost {
         amountPerQuantity {
           amount
+          currencyCode
         }
       }
       merchandise {
         __typename
         ... on ProductVariant {
           id
-          vip_price: metafield(namespace: "$app", key: "vip_pricing") {
-            value
-            jsonValue
-          }
-          vip_min: metafield(namespace: "$app", key: "vip_pricing_min") {
+          tier_price: metafield(namespace: "$app", key: $priceKey) {
             value
           }
-          wholesale_price: metafield(namespace: "$app", key: "wholesale_pricing") {
-            value
-            jsonValue
-          }
-          wholesale_min: metafield(namespace: "$app", key: "wholesale_pricing_min") {
-            value
-          }
-          b2b_price: metafield(namespace: "$app", key: "b2b_pricing") {
-            value
-            jsonValue
-          }
-          b2b_min: metafield(namespace: "$app", key: "b2b_pricing_min") {
+          tier_min: metafield(namespace: "$app", key: $qtyKey) {
             value
           }
         }
       }
     }
-    buyerIdentity {
-      customer {
-        pricing_tiers: metafield(namespace: "$app", key: "pricing_tiers") {
-          value
-        }
-      }
+  }
+  discount {
+    tier_tags: metafield(namespace: "$app", key: "tier_customer_tags") {
+      value
     }
   }
 }

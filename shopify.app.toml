@@ -2,7 +2,7 @@
 
 client_id = "df06191ac3aad61382ce82af6de1e172"
 name = "Wholesale Pricing"
-application_url = "https://example.com"
+application_url = "https://wholesale.comeasy.app"
 embedded = true
 
 [build]
@@ -21,7 +21,7 @@ api_version = "2026-10"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,write_metaobjects,write_metaobject_definitions,read_customers,write_discounts"
+scopes = "write_products,write_metaobjects,write_metaobject_definitions,write_discounts,read_customers"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
@@ -56,6 +56,40 @@ api_version = "2026-07"
 [discount.metafields.app.tier_tags_map]
 type = "json"
 name = "Tier Customer Tags Map"
+
+[shop.metafields.app.tier_config]
+type = "json"
+name = "B2B Tier Tag Configuration"
+
+  [shop.metafields.app.tier_config.access]
+  admin = "merchant_read_write"
+
+[shop.metafields.app.vip_tier_tags]
+type = "single_line_text_field"
+name = "VIP Tier Customer Tags"
+description = "Comma-separated customer tags that qualify for the VIP wholesale pricing tier"
+
+  [shop.metafields.app.vip_tier_tags.access]
+  admin = "merchant_read_write"
+  storefront = "public_read"
+
+[shop.metafields.app.wholesale_tier_tags]
+type = "single_line_text_field"
+name = "Wholesale Tier Customer Tags"
+description = "Comma-separated customer tags that qualify for the Wholesale pricing tier"
+
+  [shop.metafields.app.wholesale_tier_tags.access]
+  admin = "merchant_read_write"
+  storefront = "public_read"
+
+[shop.metafields.app.b2b_tier_tags]
+type = "single_line_text_field"
+name = "B2B Tier Customer Tags"
+description = "Comma-separated customer tags that qualify for the B2B pricing tier"
+
+  [shop.metafields.app.b2b_tier_tags.access]
+  admin = "merchant_read_write"
+  storefront = "public_read"
 
 [variant.metafields.app.vip_pricing]
 type = "money"

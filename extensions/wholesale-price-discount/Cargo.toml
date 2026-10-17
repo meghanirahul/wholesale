@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 shopify_function = "2.1.0"
+shopify_function_macro = "=2.1.0"
+shopify_function_wasm_api = "=0.2.0"
 
 [profile.release]
 lto = true

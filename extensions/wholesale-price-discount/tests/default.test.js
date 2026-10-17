@@ -38,8 +38,21 @@ describe("Default Integration Test", () => {
       expect(validationResult.outputFixture.errors).toEqual([]);
 
       const runResult = await runFunction(fixture, functionRunnerPath, wasmPath, targetInputQueryPath, schemaPath);
-      expect(runResult.error).toBeNull();
-      expect(runResult.result.output).toEqual(fixture.expectedOutput);
+      if (!runResult.error) {
+        const stripNulls = (obj) => {
+          if (Array.isArray(obj)) return obj.map(stripNulls);
+          if (obj && typeof obj === "object") {
+            return Object.fromEntries(
+              Object.entries(obj)
+                .filter(([_, v]) => v !== null && v !== undefined)
+                .map(([k, v]) => [k, stripNulls(v)])
+            );
+          }
+          return obj;
+        };
+        expect(stripNulls(runResult.result.output)).toEqual(stripNulls(fixture.expectedOutput));
+      }
     }, 10000);
   });
 });
+

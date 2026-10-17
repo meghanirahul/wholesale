@@ -314,6 +314,7 @@ export const loader = async ({ request }) => {
     admin.graphql(`#graphql
       query GetShopDiscountMeta {
         shop {
+          active_discounts: metafield(namespace: "$app", key: "active_tier_discounts") { value }
           active_discount: metafield(namespace: "$app", key: "active_discount_id") { value }
         }
       }
@@ -334,37 +335,46 @@ export const loader = async ({ request }) => {
   const allCustomerTags = tagsData?.data?.shop?.customerTags?.nodes ?? [];
   const activeDiscountId = shopMetaData?.data?.shop?.active_discount?.value ?? null;
 
-  // Load existing tier_tags_map from the active discount metafield
+  // ── Resolve the tier-specific discount node ID from the stored map ────
+  let tierDiscountId = null;
+  try {
+    if (shopMetaData?.data?.shop?.active_discounts?.value) {
+      const discountsMap = JSON.parse(shopMetaData.data.shop.active_discounts.value);
+      tierDiscountId = priceKey ? (discountsMap[priceKey] ?? null) : null;
+    }
+  } catch { tierDiscountId = null; }
+  if (!tierDiscountId) tierDiscountId = activeDiscountId;
+
+  // ── Read currentTierTags from the tier's own discount node metafield ──
+  // Source of truth: tier_customer_tags on the specific discount node.
   let currentTierTags = [];
-  if (activeDiscountId && priceKey) {
+  if (priceKey && tierDiscountId) {
     try {
       const discountRes = await admin.graphql(
         `#graphql
-          query GetTierTagsMap($id: ID!) {
+          query GetTierCustomerTags($id: ID!) {
             discountNode(id: $id) {
-              metafield(namespace: "$app", key: "tier_tags_map") { value }
+              metafield(namespace: "$app", key: "tier_customer_tags") { value }
             }
           }
         `,
-        { variables: { id: activeDiscountId } }
+        { variables: { id: tierDiscountId } }
       );
       const discountData = await discountRes.json();
-      const rawMap = discountData?.data?.discountNode?.metafield?.value;
-      const tierTagsMap = rawMap ? JSON.parse(rawMap) : {};
-      currentTierTags = tierTagsMap[priceKey] ?? [];
-    } catch {
-      currentTierTags = [];
-    }
+      const rawConfig = discountData?.data?.discountNode?.metafield?.value;
+      if (rawConfig) {
+        const parsed = JSON.parse(rawConfig);
+        currentTierTags = Array.isArray(parsed?.tags) ? parsed.tags : [];
+      }
+    } catch { currentTierTags = []; }
   }
 
-  // Fallback to Firestore store tier tags if discount metafield empty
-  if ((!currentTierTags || currentTierTags.length === 0) && session?.shop && priceKey) {
+  // Fallback: Firestore
+  if (currentTierTags.length === 0 && session?.shop && priceKey) {
     try {
       const storeTagsMap = await getStoreTierTags(session.shop);
       currentTierTags = storeTagsMap[priceKey] ?? [];
-    } catch {
-      currentTierTags = [];
-    }
+    } catch { currentTierTags = []; }
   }
 
   return {
@@ -377,7 +387,7 @@ export const loader = async ({ request }) => {
     pageInfo: data?.data?.products?.pageInfo ?? {},
     allCustomerTags,
     currentTierTags,
-    activeDiscountId,
+    activeDiscountId: tierDiscountId,
   };
 };
 
@@ -509,56 +519,238 @@ export const action = async ({ request }) => {
     return { intent: "fetchProducts", ok: true, products: prodData?.data?.products?.nodes ?? [], pageInfo: prodData?.data?.products?.pageInfo ?? {} };
   }
 
-  // ── saveTags intent: persist tier_tags_map to the discount metafield ──
+  // Search products with a query string
+  if (intent === "searchProducts") {
+    const query = formData.get("query") || "";
+    const after = formData.get("after") || null;
+    const first = formData.get("first") ? parseInt(formData.get("first"), 10) : 10;
+    const searchResponse = await admin.graphql(
+      `#graphql
+        query SearchProducts($query: String!, $first: Int = 10, $after: String) {
+          products(first: $first, query: $query, after: $after) {
+            nodes {
+              id title
+              media(first: 1) { nodes { preview { image { url } } } }
+              priceRangeV2 {
+                maxVariantPrice { amount }
+                minVariantPrice { amount }
+              }
+              variantsCount { count }
+              variants(first: 100) {
+                nodes {
+                  id title price
+                  metafields(namespace: "$app", first: 100) {
+                    nodes { id key type value }
+                  }
+                }
+                pageInfo { endCursor hasNextPage hasPreviousPage startCursor }
+              }
+            }
+            pageInfo { endCursor hasNextPage hasPreviousPage startCursor }
+          }
+        }
+      `,
+      { variables: { query, first, after } }
+    );
+    const searchData = await searchResponse.json();
+    if (searchData.errors?.length) {
+      return {
+        intent: "searchProducts",
+        ok: false,
+        error: searchData.errors.map((e) => e.message).join(", "),
+        products: [],
+        pageInfo: {},
+        query,
+      };
+    }
+    return {
+      intent: "searchProducts",
+      ok: true,
+      products: searchData?.data?.products?.nodes ?? [],
+      pageInfo: searchData?.data?.products?.pageInfo ?? {},
+      query,
+    };
+  }
+
+  // ── saveTags intent: save tier_customer_tags to the tier's discount node ──
   if (intent === "saveTags") {
     const priceKey = formData.get("priceKey");
     const tagsRaw = formData.get("tags");
     let tags = [];
     try { tags = JSON.parse(tagsRaw); } catch { tags = []; }
 
-    // 1. Get or create the active automatic discount for the B2B Pricing function
-    let discountGid = formData.get("activeDiscountId") || null;
-    let shopGid = null;
+    const TIER_NAME_MAP = {
+      vip_pricing: "VIP Wholesale Pricing",
+      wholesale_pricing: "Wholesale Tier Pricing",
+      b2b_pricing: "B2B Tier Pricing",
+    };
+    const KNOWN_TIER_KEYS = ["vip_pricing", "wholesale_pricing", "b2b_pricing"];
 
-    if (!discountGid) {
-      // Fetch shop ID and stored discount GID together
-      const shopRes = await admin.graphql(`#graphql
-        query GetShopForDiscount {
-          shop {
-            id
-            active_discount: metafield(namespace: "$app", key: "active_discount_id") { value }
-          }
-        }
-      `);
-      const shopData = await shopRes.json();
-      shopGid = shopData?.data?.shop?.id ?? null;
-      discountGid = shopData?.data?.shop?.active_discount?.value ?? null;
+    if (!priceKey || !KNOWN_TIER_KEYS.includes(priceKey)) {
+      return { intent: "saveTags", ok: false, error: "Invalid priceKey." };
     }
 
-    if (!discountGid) {
-      // No stored discount — find function and create one
-      if (!shopGid) {
-        const shopIdRes = await admin.graphql(`#graphql query { shop { id } }`);
-        shopGid = (await shopIdRes.json())?.data?.shop?.id ?? null;
-      }
-      const funcRes = await admin.graphql(`#graphql
-        query GetWholesaleFunction {
-          shopifyFunctions(first: 25) {
-            nodes { id title apiType }
-          }
-        }
-      `);
-      const funcData = await funcRes.json();
-      const fn = funcData?.data?.shopifyFunctions?.nodes?.find(
-        (f) =>
-          f.apiType === "cart_lines_discounts_generate.run" ||
-          (f.title ?? "").toLowerCase().includes("wholesale")
-      );
+    const qtyKey = `${priceKey}_min`;
+    const tierName = TIER_NAME_MAP[priceKey] ?? "Tier Pricing";
 
-      if (fn) {
+    // Normalize tags — deduplicate and trim (empty array is valid: disables tier)
+    const cleanTags = Array.isArray(tags)
+      ? Array.from(new Set(tags.map((t) => String(t).trim()).filter(Boolean)))
+      : [];
+
+    // Per-tier config to store in the discount node's tier_customer_tags metafield.
+    // Shopify reads this and injects { tags, priceKey, qtyKey } as $tags, $priceKey, $qtyKey variables.
+    const tierConfig = {
+      tags: cleanTags,
+      priceKey,
+      qtyKey,
+      tierName,
+      tiers: {},
+    };
+    const tierConfigJson = JSON.stringify(tierConfig);
+
+    // 1. Fetch shop ID and stored discounts map
+    const shopRes = await admin.graphql(`#graphql
+      query GetShopDiscountData {
+        shop {
+          id
+          active_discounts: metafield(namespace: "$app", key: "active_tier_discounts") { value }
+          active_discount: metafield(namespace: "$app", key: "active_discount_id") { value }
+        }
+      }
+    `);
+    const shopData = await shopRes.json();
+    const shop = shopData?.data?.shop;
+    const shopGid = shop?.id;
+    if (!shopGid) {
+      return { intent: "saveTags", ok: false, error: "Could not retrieve shop ID." };
+    }
+
+    let storedDiscounts = {};
+    try {
+      if (shop?.active_discounts?.value) {
+        storedDiscounts = JSON.parse(shop.active_discounts.value);
+      }
+    } catch {
+      storedDiscounts = {};
+    }
+
+    // 2. Discover available Shopify Functions
+    const funcRes = await admin.graphql(`#graphql
+      query GetAllDiscountFunctions {
+        shopifyFunctions(first: 25) {
+          nodes { id title handle apiType }
+        }
+      }
+    `);
+    const funcData = await funcRes.json();
+    const allFunctions = funcData?.data?.shopifyFunctions?.nodes ?? [];
+    const discountFunctions = allFunctions.filter(
+      (f) => f.apiType === "cart_lines_discounts_generate.run"
+    );
+
+    const TIER_SPECS = [
+      {
+        key: "vip_pricing",
+        title: "VIP Wholesale Pricing",
+        match: (t) => t.includes("vip") || t === "wholesale-price-discount",
+      },
+      {
+        key: "wholesale_pricing",
+        title: "Wholesale Tier Pricing",
+        match: (t) =>
+          (t.includes("wholesale") && !t.includes("b2b") && !t.includes("vip") && t !== "wholesale-price-discount") ||
+          t.includes("wholesale-tier"),
+      },
+      {
+        key: "b2b_pricing",
+        title: "B2B Tier Pricing",
+        match: (t) => t.includes("b2b"),
+      },
+    ];
+
+    const activeDiscountIds = { ...storedDiscounts };
+
+    // 3. Ensure all 3 discount nodes exist and are active
+    for (const spec of TIER_SPECS) {
+      let fn = discountFunctions.find((f) => {
+        const h = (f.handle ?? "").toLowerCase();
+        const t = (f.title ?? "").toLowerCase();
+        return spec.match(h) || spec.match(t);
+      });
+      if (!fn) {
+        if (spec.key === "vip_pricing") {
+          fn = discountFunctions.find((f) => {
+            const h = (f.handle ?? "").toLowerCase();
+            const t = (f.title ?? "").toLowerCase();
+            return h.includes("vip") || h.includes("wholesale-price") || t.includes("vip") || t.includes("wholesale-price");
+          });
+        } else if (spec.key === "wholesale_pricing") {
+          fn = discountFunctions.find((f) => {
+            const h = (f.handle ?? "").toLowerCase();
+            const t = (f.title ?? "").toLowerCase();
+            return h.includes("wholesale-tier") || t.includes("wholesale-tier") || h.includes("wholesale") || t.includes("wholesale");
+          });
+        } else if (spec.key === "b2b_pricing") {
+          fn = discountFunctions.find((f) => {
+            const h = (f.handle ?? "").toLowerCase();
+            const t = (f.title ?? "").toLowerCase();
+            return h.includes("b2b") || t.includes("b2b");
+          });
+        }
+      }
+
+      if (!fn) continue;
+
+      let discountGid = activeDiscountIds[spec.key] || (spec.key === "vip_pricing" ? shop?.active_discount?.value : null);
+      let isValid = false;
+
+      if (discountGid) {
+        try {
+          const verifyRes = await admin.graphql(
+            `#graphql
+              query VerifyDiscountNode($id: ID!) {
+                discountNode(id: $id) {
+                  discount { ... on DiscountAutomaticApp { status } }
+                }
+              }
+            `,
+            { variables: { id: discountGid } }
+          );
+          const verifyData = await verifyRes.json();
+          const status = verifyData?.data?.discountNode?.discount?.status;
+          if (status === "ACTIVE") {
+            isValid = true;
+          } else if (status === "EXPIRED" || status === "SCHEDULED") {
+            await admin.graphql(
+              `#graphql
+                mutation ActivateTierDiscount($id: ID!) {
+                  discountAutomaticActivate(id: $id) { userErrors { field message } }
+                }
+              `,
+              { variables: { id: discountGid } }
+            );
+            isValid = true;
+          }
+        } catch {
+          isValid = false;
+        }
+      }
+
+      if (!isValid) {
+        // Build the initial tier_customer_tags config for this spec.
+        // Use the saved tags only for the tier being saved; others get empty.
+        const specConfig = {
+          tags: spec.key === priceKey ? cleanTags : [],
+          priceKey: spec.key,
+          qtyKey: `${spec.key}_min`,
+          tierName: TIER_NAME_MAP[spec.key] ?? spec.title,
+          tiers: {},
+        };
+
         const createRes = await admin.graphql(
           `#graphql
-            mutation CreateAutoDiscount($discount: DiscountAutomaticAppInput!) {
+            mutation CreateTierAutoDiscount($discount: DiscountAutomaticAppInput!) {
               discountAutomaticAppCreate(automaticAppDiscount: $discount) {
                 automaticAppDiscount { discountId }
                 userErrors { field message }
@@ -568,112 +760,147 @@ export const action = async ({ request }) => {
           {
             variables: {
               discount: {
-                title: "B2B Wholesale Pricing",
+                title: spec.title,
                 functionId: fn.id,
                 startsAt: new Date().toISOString(),
                 discountClasses: ["PRODUCT"],
-                combinesWith: { orderDiscounts: true, productDiscounts: true, shippingDiscounts: true },
+                combinesWith: {
+                  orderDiscounts: true,
+                  productDiscounts: true,
+                  shippingDiscounts: true,
+                },
+                // Seed tier_customer_tags at creation so Shopify's input_variables
+                // mechanism immediately has tags, priceKey, qtyKey to inject.
+                metafields: [
+                  {
+                    namespace: "$app",
+                    key: "tier_customer_tags",
+                    type: "json",
+                    value: JSON.stringify(specConfig),
+                  },
+                ],
               },
             },
           }
         );
         const createData = await createRes.json();
-        discountGid = createData?.data?.discountAutomaticAppCreate?.automaticAppDiscount?.discountId ?? null;
-
-        // Persist the new discount GID to shop metafield (use real shopGid, not "shop")
-        if (discountGid && shopGid) {
-          await admin.graphql(
-            `#graphql
-              mutation SaveActiveDiscount($metafields: [MetafieldsSetInput!]!) {
-                metafieldsSet(metafields: $metafields) { userErrors { field message } }
-              }
-            `,
-            {
-              variables: {
-                metafields: [{
-                  ownerId: shopGid,
-                  namespace: "$app",
-                  key: "active_discount_id",
-                  type: "single_line_text_field",
-                  value: discountGid,
-                }],
-              },
-            }
-          );
+        const createErrors = createData?.data?.discountAutomaticAppCreate?.userErrors ?? [];
+        if (createErrors.length) {
+          console.error(`[saveTags] Failed to create discount for ${spec.key}:`, createErrors.map((e) => e.message).join("; "));
         }
+        const newId = createData?.data?.discountAutomaticAppCreate?.automaticAppDiscount?.discountId ?? null;
+        if (newId) {
+          activeDiscountIds[spec.key] = newId;
+          console.log(`[saveTags] Created new discount for ${spec.key}: ${newId}`);
+        }
+      } else {
+        activeDiscountIds[spec.key] = discountGid;
       }
     }
 
-    if (!discountGid) {
-      return { intent: "saveTags", ok: false, error: "Could not find or create the B2B discount. Ensure the wholesale-price-discount function is deployed." };
+    // 4. Write tier_customer_tags ONLY to this tier's discount node.
+    //    The other two nodes are not touched — they manage their own config.
+    const tierDiscountId = activeDiscountIds[priceKey];
+    if (!tierDiscountId) {
+      return { intent: "saveTags", ok: false, error: `Could not find or create discount node for ${priceKey}.` };
     }
 
-    // 2. Read current tier_tags_map from discount metafield
-    const existingRes = await admin.graphql(
-      `#graphql
-        query GetExistingMap($id: ID!) {
-          discountNode(id: $id) {
-            metafield(namespace: "$app", key: "tier_tags_map") { value }
-          }
-        }
-      `,
-      { variables: { id: discountGid } }
-    );
-    const existingData = await existingRes.json();
-    let tierTagsMap = {};
-    try {
-      const raw = existingData?.data?.discountNode?.metafield?.value;
-      tierTagsMap = raw ? JSON.parse(raw) : {};
-    } catch { tierTagsMap = {}; }
+    const metafieldsToSet = [
+      // Update shop active_tier_discounts map
+      {
+        ownerId: shopGid,
+        namespace: "$app",
+        key: "active_tier_discounts",
+        type: "json",
+        value: JSON.stringify(activeDiscountIds),
+      },
+      // Write this tier's config to its own discount node
+      {
+        ownerId: tierDiscountId,
+        namespace: "$app",
+        key: "tier_customer_tags",
+        type: "json",
+        value: tierConfigJson,
+      },
+    ];
 
-    // 3. Merge this tier's tags into the map
-    if (tags.length > 0) {
-      tierTagsMap[priceKey] = tags;
-    } else {
-      delete tierTagsMap[priceKey];
+    const primaryDiscountId = activeDiscountIds.vip_pricing || activeDiscountIds.wholesale_pricing || activeDiscountIds.b2b_pricing;
+    if (primaryDiscountId) {
+      metafieldsToSet.push({
+        ownerId: shopGid,
+        namespace: "$app",
+        key: "active_discount_id",
+        type: "single_line_text_field",
+        value: primaryDiscountId,
+      });
     }
 
-    // 4. Save updated map to discount metafield
     const saveRes = await admin.graphql(
       `#graphql
-        mutation SaveTierTagsMap($metafields: [MetafieldsSetInput!]!) {
+        mutation SaveTierCustomerTags($metafields: [MetafieldsSetInput!]!) {
           metafieldsSet(metafields: $metafields) {
             metafields { id key }
             userErrors { field message }
           }
         }
       `,
-      {
-        variables: {
-          metafields: [{
-            ownerId: discountGid,
-            namespace: "$app",
-            key: "tier_tags_map",
-            type: "json",
-            value: JSON.stringify(tierTagsMap),
-          }],
-        },
-      }
+      { variables: { metafields: metafieldsToSet } }
     );
     const saveData = await saveRes.json();
     const userErrors = saveData?.data?.metafieldsSet?.userErrors ?? [];
     if (userErrors.length) {
+      console.error("[saveTags] metafieldsSet userErrors:", userErrors.map((e) => `${e.field}: ${e.message}`).join("; "));
       return { intent: "saveTags", ok: false, error: userErrors.map((e) => e.message).join("; ") };
     }
+    console.log(`[saveTags] Saved tier_customer_tags for ${priceKey} → discount ${tierDiscountId}`);
+    console.log(`[saveTags] Config: ${tierConfigJson}`);
 
-    // ── Step 4.5: Persist store tier tags to Firestore per store ─────────────
+    // 5. Persist to Firestore per store (fallback)
     if (session?.shop) {
-      await saveStoreTierTags(session.shop, tierTagsMap);
+      try {
+        const storeTagsMap = await getStoreTierTags(session.shop) ?? {};
+        storeTagsMap[priceKey] = cleanTags;
+        await saveStoreTierTags(session.shop, storeTagsMap);
+      } catch (err) {
+        console.error("[saveTags] Firestore save failed:", err);
+      }
     }
 
-    // ── Step 5: Sync existing customers who have the configured tags ──────────
-    // Fire-and-forget: update pricing_tiers metafield on customers that have the
-    // configured tags. This makes the discount function work immediately without webhooks.
-    syncAllCustomerTierMetafields(admin, tierTagsMap).catch((e) =>
-      console.error("[saveTags] Customer sync failed:", e)
-    );
+    // 6. Write a shop-level single_line_text_field metafield for Liquid access.
+    //    Key: e.g. "vip_tier_tags", "wholesale_tier_tags", "b2b_tier_tags"
+    //    Value: comma-separated tag list e.g. "VIP,Reseller,Partner"
+    //    Liquid: {{ shop.metafields.app.vip_tier_tags.value }}
+    const shopTagMetafieldKey = `${priceKey.replace(/_pricing$/, "")}_tier_tags`;
+    const shopTagMetafieldValue = cleanTags.join(",");
+    try {
+      await admin.graphql(
+        `#graphql
+          mutation WriteShopTierTagsMetafield($metafields: [MetafieldsSetInput!]!) {
+            metafieldsSet(metafields: $metafields) {
+              userErrors { field message }
+            }
+          }
+        `,
+        {
+          variables: {
+            metafields: [
+              {
+                ownerId: shopGid,
+                namespace: "$app",
+                key: shopTagMetafieldKey,
+                type: "single_line_text_field",
+                value: shopTagMetafieldValue,
+              },
+            ],
+          },
+        }
+      );
+      console.log(`[saveTags] Shop metafield $app:${shopTagMetafieldKey} = "${shopTagMetafieldValue}"`);
+    } catch (err) {
+      console.error("[saveTags] Shop tag metafield write failed:", err);
+    }
 
-    return { intent: "saveTags", ok: true, discountGid, tierTagsMap };
+    return { intent: "saveTags", ok: true, discountGid: tierDiscountId, tags: cleanTags };
   }
 
   // Fetch paginated variants for an expanded product
@@ -772,6 +999,7 @@ export function shouldRevalidate(arg) {
   const intent = arg.formData?.get("intent") || arg.actionResult?.intent;
   if (
     intent === "fetchProducts" ||
+    intent === "searchProducts" ||
     intent === "fetchVariants" ||
     intent === "save" ||
     intent === "saveTags"
@@ -790,26 +1018,55 @@ function CustomerTagsSection({
   tierName,
 }) {
   const tagsFetcher = useFetcher();
+  // savedTags = the last-persisted state (used for discard)
+  const [savedTags, setSavedTags] = useState(currentTierTags ?? []);
   const [selectedTags, setSelectedTags] = useState(currentTierTags ?? []);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [customTagInput, setCustomTagInput] = useState("");
   const [tagSaving, setTagSaving] = useState(false);
-  const [tagSaveSuccess, setTagSaveSuccess] = useState(false);
   const [tagSaveError, setTagSaveError] = useState(null);
   const pendingTagSaveRef = useRef(false);
 
-  // Sync tags when tier changes
+  const tagSaveBarId = "tags-save-bar";
+
+  // isDirty: selected tags differ from last saved tags
+  const isDirty =
+    selectedTags.length !== savedTags.length ||
+    !selectedTags.every((t) => savedTags.includes(t));
+
+  // Sync tags when tier changes (navigating between tiers)
   const prevPriceKeyRef = useRef(priceKey);
   useEffect(() => {
     if (prevPriceKeyRef.current !== priceKey) {
       prevPriceKeyRef.current = priceKey;
+      setSavedTags(currentTierTags ?? []);
       setSelectedTags(currentTierTags ?? []);
-      setTagSaveSuccess(false);
       setTagSaveError(null);
       setPickerOpen(false);
+      setSearchQuery("");
     }
   }, [priceKey, currentTierTags]);
+
+  // Show / hide save bar based on dirty state
+  useEffect(() => {
+    if (typeof shopify !== "undefined" && shopify.saveBar) {
+      if (isDirty) {
+        shopify.saveBar.show(tagSaveBarId);
+      } else {
+        shopify.saveBar.hide(tagSaveBarId);
+      }
+    }
+  }, [isDirty]);
+
+  // Hide save bar on unmount
+  useEffect(() => {
+    return () => {
+      if (typeof shopify !== "undefined" && shopify.saveBar) {
+        shopify.saveBar.hide(tagSaveBarId);
+      }
+    };
+  }, []);
 
   // Handle saveTags response
   useEffect(() => {
@@ -818,7 +1075,7 @@ function CustomerTagsSection({
     pendingTagSaveRef.current = false;
     setTagSaving(false);
     if (tagsFetcher.data.ok) {
-      setTagSaveSuccess(true);
+      setSavedTags([...selectedTags]); // commit: saved = selected
       setTagSaveError(null);
       if (typeof shopify !== "undefined") shopify.toast.show("Tags saved!");
     } else {
@@ -826,18 +1083,18 @@ function CustomerTagsSection({
     }
   }, [tagsFetcher.data]);
 
+  const markDirty = () => setTagSaveError(null);
+
   const toggleTag = useCallback((tag) => {
     setSelectedTags((prev) =>
       prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
     );
-    setTagSaveSuccess(false);
-    setTagSaveError(null);
+    markDirty();
   }, []);
 
   const removeTag = useCallback((tag) => {
     setSelectedTags((prev) => prev.filter((t) => t !== tag));
-    setTagSaveSuccess(false);
-    setTagSaveError(null);
+    markDirty();
   }, []);
 
   const addCustomTags = useCallback(() => {
@@ -848,14 +1105,12 @@ function CustomerTagsSection({
       .filter((t) => t.length > 0 && !selectedTags.includes(t));
     if (newTags.length > 0) setSelectedTags((prev) => [...prev, ...newTags]);
     setCustomTagInput("");
-    setTagSaveSuccess(false);
-    setTagSaveError(null);
+    markDirty();
   }, [customTagInput, selectedTags]);
 
   const handleSaveTags = useCallback(() => {
     if (tagSaving) return;
     setTagSaving(true);
-    setTagSaveSuccess(false);
     setTagSaveError(null);
     setPickerOpen(false);
     pendingTagSaveRef.current = true;
@@ -867,12 +1122,33 @@ function CustomerTagsSection({
     tagsFetcher.submit(fd, { method: "POST" });
   }, [tagSaving, priceKey, selectedTags, activeDiscountId, tagsFetcher]);
 
+  const handleDiscard = useCallback(() => {
+    setSelectedTags([...savedTags]);
+    setTagSaveError(null);
+    setPickerOpen(false);
+    setSearchQuery("");
+  }, [savedTags]);
+
   const filteredTags = allCustomerTags.filter((t) =>
     t.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   return (
     <s-section>
+      {/* ── Save bar for tag changes ── */}
+      <ui-save-bar id={tagSaveBarId}>
+        <button
+          variant="primary"
+          onClick={handleSaveTags}
+          disabled={tagSaving}
+        >
+          {tagSaving ? "Saving..." : "Save"}
+        </button>
+        <button onClick={handleDiscard} disabled={tagSaving}>
+          Discard
+        </button>
+      </ui-save-bar>
+
       <s-stack direction="block" gap="base">
 
         {/* ── Header row ── */}
@@ -883,31 +1159,16 @@ function CustomerTagsSection({
               Only customers with a matching tag receive <strong>{tierName}</strong> pricing at checkout.
             </s-text>
           </s-stack>
-          <s-stack direction="inline" gap="small">
-            <s-button
-              variant="secondary"
-              onClick={() => { setPickerOpen((o) => !o); setSearchQuery(""); }}
-            >
-              {pickerOpen ? "Close Tag Picker" : `Select Tags${allCustomerTags.length ? ` (${allCustomerTags.length})` : ""}`}
-            </s-button>
-            <s-button
-              variant="primary"
-              onClick={handleSaveTags}
-              disabled={tagSaving}
-              {...(tagSaving ? { loading: true } : {})}
-            >
-              {tagSaving ? "Saving…" : "Save Tags"}
-            </s-button>
-          </s-stack>
+          <s-button
+            variant="secondary"
+            onClick={() => { setPickerOpen((o) => !o); setSearchQuery(""); }}
+          >
+            {pickerOpen ? "Close Tag Picker" : `Select Tags${allCustomerTags.length ? ` (${allCustomerTags.length})` : ""}`}
+          </s-button>
         </s-stack>
 
-        {/* ── Banners ── */}
+        {/* ── Error banner ── */}
         {tagSaveError && <s-banner tone="critical">{tagSaveError}</s-banner>}
-        {tagSaveSuccess && (
-          <s-banner tone="success">
-            Tags saved! Customers with matching tags will receive {tierName} pricing.
-          </s-banner>
-        )}
 
         {/* ── Selected tags badges ── */}
         <s-stack direction="block" gap="small-200">
@@ -921,9 +1182,12 @@ function CustomerTagsSection({
           ) : (
             <s-stack direction="inline" gap="small-200" wrap="wrap">
               {selectedTags.map((tag) => (
-                <s-tag key={tag} onRemove={() => removeTag(tag)}>
-                  {tag}
-                </s-tag>
+                <s-stack onClick={() => removeTag(tag)} direction="inline" background="subdued" borderRadius="large-200" padding="small-400 small-200">
+                  <s-stack key={tag} onRemove={() => removeTag(tag)} >
+                    {tag}
+                  </s-stack>
+                  <s-icon type="minus"></s-icon>
+                </s-stack>
               ))}
             </s-stack>
           )}
@@ -1019,6 +1283,14 @@ export default function Pricing() {
   const [productCursorHistory, setProductCursorHistory] = useState([null]);
   const [productPageLoading, setProductPageLoading] = useState(false);
 
+  // Search state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeSearchQuery, setActiveSearchQuery] = useState("");
+  const activeSearchQueryRef = useRef("");
+  const debounceTimerRef = useRef(null);
+  const defaultProductsRef = useRef(loaderData.products ?? []);
+  const defaultPageInfoRef = useRef(loaderData.pageInfo ?? {});
+
   // Edit state: compositeKey → { value, originalValue, type, key, ownerId }
   const [edits, setEdits] = useState(() =>
     mergeVariantsIntoEdits({}, loaderData.products ?? [], priceKey, qtyKey)
@@ -1040,6 +1312,13 @@ export default function Pricing() {
   useEffect(() => {
     if (currentTierIdRef.current !== loaderData.tierId) {
       currentTierIdRef.current = loaderData.tierId;
+      // Reset search state on tier switch
+      defaultProductsRef.current = loaderData.products ?? [];
+      defaultPageInfoRef.current = loaderData.pageInfo ?? {};
+      setSearchQuery("");
+      setActiveSearchQuery("");
+      activeSearchQueryRef.current = "";
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
       setProducts(loaderData.products ?? []);
       setProductPageInfo(loaderData.pageInfo ?? {});
       setProductCursorHistory([null]);
@@ -1048,13 +1327,26 @@ export default function Pricing() {
     }
   }, [loaderData.tierId, loaderData.products, loaderData.pageInfo, priceKey, qtyKey]);
 
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
+  }, []);
+
   // ── Handle fetcher responses ─────────────────────────────────────────────
 
   useEffect(() => {
     if (!fetcher.data) return;
 
-    // Handle product-level pagination responses
-    if (fetcher.data.intent === "fetchProducts") {
+    // Handle product-level pagination or search responses
+    if (fetcher.data.intent === "fetchProducts" || fetcher.data.intent === "searchProducts") {
+      // Stale-response guard for search
+      if (fetcher.data.intent === "searchProducts") {
+        if (activeSearchQueryRef.current !== (fetcher.data.query ?? "")) return;
+      } else if (activeSearchQueryRef.current) {
+        // Ignore plain fetchProducts response while search is active
+        return;
+      }
+
       setProductPageLoading(false);
       const pending = pendingProductFetchRef.current;
       pendingProductFetchRef.current = null;
@@ -1071,6 +1363,8 @@ export default function Pricing() {
         setProductCursorHistory((prev) => [...prev, pending.cursor]);
       } else if (pending?.direction === "prev") {
         setProductCursorHistory((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
+      } else if (pending?.direction === "reset") {
+        setProductCursorHistory([null]);
       }
 
       // Merge new products into edits (preserving already-edited values)
@@ -1245,11 +1539,48 @@ export default function Pricing() {
     setSaveSuccess(false);
     pendingProductFetchRef.current = { cursor, direction };
     const fd = new FormData();
-    fd.append("intent", "fetchProducts");
-    if (cursor) {
-      fd.append("after", cursor);
+    if (activeSearchQueryRef.current) {
+      fd.append("intent", "searchProducts");
+      fd.append("query", activeSearchQueryRef.current);
+      fd.append("first", "10");
+    } else {
+      fd.append("intent", "fetchProducts");
     }
+    if (cursor) fd.append("after", cursor);
     fetcher.submit(fd, { method: "POST" });
+  };
+
+  // ── Debounced Search ─────────────────────────────────────────────────────
+
+  const handleSearchChange = (val) => {
+    setSearchQuery(val);
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      const trimmed = val.trim();
+      if (!trimmed) {
+        // Blank query — restore default products immediately
+        activeSearchQueryRef.current = "";
+        setActiveSearchQuery("");
+        setProductPageLoading(false);
+        setProductCursorHistory([null]);
+        setProducts(defaultProductsRef.current);
+        setProductPageInfo(defaultPageInfoRef.current);
+        setSaveError(null);
+        return;
+      }
+      // Execute search
+      activeSearchQueryRef.current = trimmed;
+      setActiveSearchQuery(trimmed);
+      setProductPageLoading(true);
+      setSaveError(null);
+      setSaveSuccess(false);
+      pendingProductFetchRef.current = { direction: "reset", cursor: null };
+      const fd = new FormData();
+      fd.append("intent", "searchProducts");
+      fd.append("query", trimmed);
+      fd.append("first", "10");
+      fetcher.submit(fd, { method: "POST" });
+    }, 300);
   };
 
   const handleNextProductPage = () => {
@@ -1438,7 +1769,6 @@ export default function Pricing() {
       </ui-save-bar>
 
       {saveError && <s-banner tone="critical">{saveError}</s-banner>}
-      {saveSuccess && <s-banner tone="success">Pricing saved successfully!</s-banner>}
 
       {/* ── Customer Tag Access Section ── */}
       <CustomerTagsSection
@@ -1449,7 +1779,22 @@ export default function Pricing() {
         tierName={tierDef.name}
       />
 
-      <s-section>
+      <s-section heading="Product Pricing">
+
+        <s-box paddingBlockEnd="base">
+          <s-search-field
+            label="Search products"
+            labelAccessibilityVisibility="exclusive"
+            placeholder="Search products…"
+            value={searchQuery}
+            onInput={(e) =>
+              handleSearchChange(e.currentTarget?.value ?? e.target?.value ?? "")
+            }
+            onChange={(e) =>
+              handleSearchChange(e.currentTarget?.value ?? e.target?.value ?? "")
+            }
+          ></s-search-field>
+        </s-box>
 
         <s-table>
           <s-table-header-row>
@@ -1465,7 +1810,11 @@ export default function Pricing() {
               <s-table-row>
                 <s-table-cell colSpan={qtyKey ? 5 : 4}>
                   <s-box padding="base">
-                    <s-text tone="subdued">No products found.</s-text>
+                    <s-text tone="subdued">
+                      {activeSearchQuery
+                        ? `No products found matching "${activeSearchQuery}".`
+                        : "No products found."}
+                    </s-text>
                   </s-box>
                 </s-table-cell>
               </s-table-row>
@@ -1561,12 +1910,16 @@ export default function Pricing() {
         >
           <s-stack direction="inline" gap="small" alignItems="center">
             <s-text tone="subdued">
-              Product Page {productCursorHistory.length}
+              {activeSearchQuery
+                ? `Search Page ${productCursorHistory.length}`
+                : `Product Page ${productCursorHistory.length}`}
             </s-text>
             {productPageLoading && (
               <s-stack direction="inline" gap="small" alignItems="center">
                 <s-spinner size="small" />
-                <s-text tone="subdued">Loading products...</s-text>
+                <s-text tone="subdued">
+                  {activeSearchQuery ? "Searching…" : "Loading products…"}
+                </s-text>
               </s-stack>
             )}
           </s-stack>
@@ -1590,21 +1943,6 @@ export default function Pricing() {
         </s-stack>
 
       </s-section>
-      {hasChanges && (
-        <s-stack direction="inline" gap="base" justifyContent="end" alignItems="center" paddingBlockStart="base">
-          <s-button variant="secondary" onClick={handleCancel} disabled={saving || productPageLoading}>
-            Cancel
-          </s-button>
-          <s-button
-            variant="primary"
-            onClick={handleSave}
-            disabled={saving || productPageLoading}
-            {...(saving ? { loading: true } : {})}
-          >
-            {saving ? "Saving..." : "Save"}
-          </s-button>
-        </s-stack>
-      )}
     </s-page>
   );
 }

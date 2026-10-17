@@ -1,0 +1,23 @@
+api_version = "2026-07"
+
+[[extensions]]
+handle = "wholesale-tier-discount"
+name = "Wholesale Tier Discount"
+type = "function"
+uid = "d7d5d320-4bcc-b524-89bb-4ea783ab93bcb693adcb"
+description = "Wholesale Tier Discount"
+
+  [[extensions.targeting]]
+  target = "cart.lines.discounts.generate.run"
+  input_query = "src/cart_lines_discounts_generate_run.graphql"
+  export = "cart_lines_discounts_generate_run"
+  input_variables = { namespace = "$app", key = "tier_customer_tags" }
+
+  [extensions.build]
+  command = "cargo build --target=wasm32-unknown-unknown --release"
+  path = "target/wasm32-unknown-unknown/release/wholesale-tier-discount.wasm"
+  watch = [ "src/**/*.rs" ]
+
+  [extensions.ui.paths]
+  create = "/"
+  details = "/"

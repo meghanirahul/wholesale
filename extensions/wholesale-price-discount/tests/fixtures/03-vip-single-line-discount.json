@@ -1,0 +1,63 @@
+{
+    "payload": {
+        "export": "cart_lines_discounts_generate_run",
+        "target": "cart.lines.discounts.generate.run",
+        "input": {
+            "cart": {
+                "buyerIdentity": {
+                    "customer": {
+                        "has_vip": true
+                    }
+                },
+                "lines": [
+                    {
+                        "id": "gid://shopify/CartLine/1",
+                        "quantity": 2,
+                        "cost": {
+                            "amountPerQuantity": {
+                                "amount": "20.00",
+                                "currencyCode": "USD"
+                            }
+                        },
+                        "merchandise": {
+                            "__typename": "ProductVariant",
+                            "id": "gid://shopify/ProductVariant/100",
+                            "vip_price": {
+                                "value": "12.00"
+                            },
+                            "vip_min": {
+                                "value": "1"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        "output": {
+            "operations": [
+                {
+                    "productDiscountsAdd": {
+                        "selectionStrategy": "ALL",
+                        "candidates": [
+                            {
+                                "targets": [
+                                    {
+                                        "cartLine": {
+                                            "id": "gid://shopify/CartLine/1"
+                                        }
+                                    }
+                                ],
+                                "value": {
+                                    "fixedAmount": {
+                                        "amount": "8.0",
+                                        "appliesToEachItem": true
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+}

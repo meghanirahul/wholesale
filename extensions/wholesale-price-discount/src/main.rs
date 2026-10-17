@@ -15,5 +15,5 @@ pub mod schema {
 
 fn main() {
     log!("Please invoke a named export.");
-    process::abort();
+    process::abort()
 }

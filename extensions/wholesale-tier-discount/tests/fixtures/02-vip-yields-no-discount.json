@@ -1,0 +1,41 @@
+{
+    "payload": {
+        "export": "cart_lines_discounts_generate_run",
+        "target": "cart.lines.discounts.generate.run",
+        "input": {
+            "cart": {
+                "buyerIdentity": {
+                    "customer": {
+                        "has_wholesale": true,
+                        "has_vip": true
+                    }
+                },
+                "lines": [
+                    {
+                        "id": "gid://shopify/CartLine/1",
+                        "quantity": 2,
+                        "cost": {
+                            "amountPerQuantity": {
+                                "amount": "20.00",
+                                "currencyCode": "USD"
+                            }
+                        },
+                        "merchandise": {
+                            "__typename": "ProductVariant",
+                            "id": "gid://shopify/ProductVariant/100",
+                            "wholesale_price": {
+                                "value": "15.00"
+                            },
+                            "wholesale_min": {
+                                "value": "1"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        "output": {
+            "operations": []
+        }
+    }
+}

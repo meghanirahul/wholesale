@@ -1,0 +1,23 @@
+api_version = "2026-07"
+
+[[extensions]]
+handle = "b2b-tier-discount"
+name = "B2B Tier Discount"
+type = "function"
+uid = "d3ef4538-f42d-0ae8-ecc6-2fd95d3575e10d020d12"
+description = "B2B Tier Discount"
+
+  [[extensions.targeting]]
+  target = "cart.lines.discounts.generate.run"
+  input_query = "src/cart_lines_discounts_generate_run.graphql"
+  export = "cart_lines_discounts_generate_run"
+  input_variables = { namespace = "$app", key = "tier_customer_tags" }
+
+  [extensions.build]
+  command = "cargo build --target=wasm32-unknown-unknown --release"
+  path = "target/wasm32-unknown-unknown/release/b2b-tier-discount.wasm"
+  watch = [ "src/**/*.rs" ]
+
+  [extensions.ui.paths]
+  create = "/"
+  details = "/"

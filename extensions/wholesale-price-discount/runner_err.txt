@@ -1,0 +1,1 @@
+function-runner failed with exit code 1: Error: unknown import: `shopify_function_v2::shopify_function_output_new_object` has not been defined

@@ -1,23 +1,23 @@
 api_version = "2026-07"
 
 [[extensions]]
-name = "t:name"
 handle = "wholesale-price-discount"
+name = "VIP Tier Discount"
 type = "function"
 uid = "4cfecf86-3d0a-7a8d-079a-32105de744f1a63d94bd"
-description = "t:description"
+description = "VIP Tier Discount"
 
   [[extensions.targeting]]
   target = "cart.lines.discounts.generate.run"
   input_query = "src/cart_lines_discounts_generate_run.graphql"
   export = "cart_lines_discounts_generate_run"
-
-  [[extensions.targeting]]
-  target = "cart.delivery-options.discounts.generate.run"
-  input_query = "src/cart_delivery_options_discounts_generate_run.graphql"
-  export = "cart_delivery_options_discounts_generate_run"
+  input_variables = { namespace = "$app", key = "tier_customer_tags" }
 
   [extensions.build]
   command = "cargo build --target=wasm32-unknown-unknown --release"
   path = "target/wasm32-unknown-unknown/release/wholesale-price-discount.wasm"
   watch = [ "src/**/*.rs" ]
+
+  [extensions.ui.paths]
+  create = "/"
+  details = "/"
